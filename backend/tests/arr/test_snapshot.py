@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from overlaparr.arr.snapshot import (
     InstanceSnapshot,
+    TrackedEpisodeData,
     TrackedItemData,
     make_client,
     persist_episodes,
@@ -104,7 +105,7 @@ def test_sonarr_series_mapping_does_not_read_episodes():
 @respx.mock
 def test_sonarr_episode_join():
     mock_sonarr()
-    eps = {e.episode_arr_id: e for e in read_series_episodes(make_client(SONARR), 5)}
+    eps = {e.episode_arr_id: e for e in read_series_episodes(make_client(SONARR), 5)[0]}
     a, b = eps[501], eps[502]
     assert a.resolution == int(Res.R1080) and a.file_size == 1500000000
     assert a.episode_file_id == 9001 and a.season == 1 and a.episode == 1
@@ -164,10 +165,58 @@ def test_persist_upserts_and_deletes_vanished_only_on_success(db):
 @respx.mock
 def test_persist_episodes_replaces_series_rows(db):
     mock_sonarr()
-    eps = read_series_episodes(make_client(SONARR), 5)
+    eps, _ = read_series_episodes(make_client(SONARR), 5)
     persist_episodes(db, "s1", 5, eps)
     persist_episodes(db, "s1", 5, eps[:1])
     rows = db.scalars(select(TrackedEpisode)).all()
     assert [r.episode_arr_id for r in rows] == [501]
     assert rows[0].air_date_utc == datetime(2022, 2, 18, 2, 0, tzinfo=UTC)
     assert rows[0].resolution == int(Res.R1080)
+
+
+@respx.mock
+def test_malformed_entries_are_skipped_not_fatal(db, caplog):
+    movies = load("radarr/movie.json")
+    bad_images = dict(movies[0], id=23, images=["oops"])
+    bad_21 = dict(movies[0], id=21, tags=7)
+    no_id = {"title": "No Id"}
+    bad_tags = dict(movies[1], id=22, tags=5)
+    respx.get("http://radarr/api/v3/movie").respond(json=movies + [bad_images, bad_21, no_id, bad_tags])
+    profiles = load("radarr/qualityprofile.json") + [{"name": "no id"}, "junk"]
+    respx.get("http://radarr/api/v3/qualityprofile").respond(json=profiles)
+    respx.get("http://radarr/api/v3/tag").respond(json=load("radarr/tag.json") + [{"id": 9}])
+    persist_snapshot(db, InstanceSnapshot("r1", True, None, [_item(21), _item(11)]), 1)
+
+    snap = read_instance(RADARR, make_client(RADARR))
+    assert snap.ok
+    assert {i.arr_id for i in snap.items} == {11, 12, 23}
+    assert snap.skipped_ids == {21, 22}
+    assert snap.tags == {1: "4k", 2: "kids"}
+    assert set(snap.profiles) == {1, 2, 3}
+    assert KEY not in caplog.text
+
+    persist_snapshot(db, snap, 2)
+    assert set(_rows(db, "r1")) == {11, 12, 21, 23}  # skipped id 21 keeps its old row
+
+
+@respx.mock
+def test_malformed_episodes_are_skipped(db):
+    mock_sonarr()
+    eps_json = load("sonarr/episode_1.json") + [
+        {"id": 503, "seriesId": 5, "title": "no numbers"},
+        {"seriesId": 5, "seasonNumber": 1, "episodeNumber": 3},
+        {"id": 504, "seriesId": 5, "seasonNumber": 1, "episodeNumber": 4, "title": "x",
+         "airDateUtc": 12, "hasFile": True, "episodeFileId": 777},
+    ]
+    respx.get("http://sonarr/api/v3/episode", params={"seriesId": 5}).respond(json=eps_json)
+    respx.get("http://sonarr/api/v3/episodefile", params={"seriesId": 5}).respond(
+        json=load("sonarr/episodefile_1.json") + [{"size": 1}, "junk"]
+    )
+    persist_episodes(db, "s1", 5, [
+        TrackedEpisodeData(503, 5, 1, 9, "old"), TrackedEpisodeData(999, 5, 1, 8, "gone")])
+    eps, skipped = read_series_episodes(make_client(SONARR), 5)
+    assert {e.episode_arr_id for e in eps} == {501, 502, 504}
+    assert skipped == {503}
+    persist_episodes(db, "s1", 5, eps, keep_ids=skipped)
+    ids = {r.episode_arr_id for r in db.scalars(select(TrackedEpisode))}
+    assert ids == {501, 502, 504, 503}
