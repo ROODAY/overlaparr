@@ -136,13 +136,22 @@ def _media_fields(item: Any) -> tuple[str | None, bool, str | None, int | None]:
 
 
 class PlexApiConnection:
-    def __init__(self, server: Any, via_relay: bool) -> None:
+    def __init__(self, server: Any, via_relay: bool, name: str = "") -> None:
         self._server = server
         self.via_relay = via_relay
+        self._name = name
+
+    def _unreachable(self, what: str) -> PlexUnreachable:
+        # Deliberately carries no underlying message: it may embed URLs or tokens.
+        return PlexUnreachable(f"Plex server {self._name!r} failed while {what}")
 
     def sections(self) -> list[tuple[str, Literal["movie", "show"]]]:
         out: list[tuple[str, Literal["movie", "show"]]] = []
-        for s in self._server.library.sections():
+        try:
+            sections = list(self._server.library.sections())
+        except Exception:  # noqa: BLE001
+            raise self._unreachable("listing sections") from None
+        for s in sections:
             if s.type == "movie":
                 out.append((str(s.key), "movie"))
             elif s.type == "show":
@@ -166,14 +175,20 @@ class PlexApiConnection:
         )
 
     def iter_items(self, section_key: str, page_size: int) -> Iterator[list[PlexItemRow]]:
-        section = self._server.library.sectionByID(int(section_key))
+        try:
+            section = self._server.library.sectionByID(int(section_key))
+        except Exception:  # noqa: BLE001
+            raise self._unreachable("opening a library section") from None
         kind: Literal["movie", "show"] = "movie" if section.type == "movie" else "show"
         start = 0
         while True:
             # maxresults caps plexapi's own auto-paging so each call fetches exactly one page.
-            items = section.search(
-                container_start=start, container_size=page_size, maxresults=page_size, includeGuids=True
-            )
+            try:
+                items = section.search(
+                    container_start=start, container_size=page_size, maxresults=page_size, includeGuids=True
+                )
+            except Exception:  # noqa: BLE001
+                raise self._unreachable("paging items") from None
             if not items:
                 return
             yield [self._item_row(i, kind) for i in items]
@@ -184,8 +199,12 @@ class PlexApiConnection:
     def episodes(self, show_rating_key: str) -> list[PlexEpisodeRow]:
         # allLeaves returns every episode of the show in one request.
         key = f"/library/metadata/{int(show_rating_key)}/allLeaves?includeGuids=1"
+        try:
+            eps = self._server.fetchItems(key, Episode)
+        except Exception:  # noqa: BLE001
+            raise self._unreachable("fetching episodes") from None
         rows = []
-        for e in self._server.fetchItems(key, Episode):
+        for e in eps:
             resolution, hdr, codec, size = _media_fields(e)
             rows.append(
                 PlexEpisodeRow(
@@ -206,11 +225,16 @@ class PlexApiGateway:
     def __init__(self, token: str) -> None:
         self._token = token
         self._access_tokens: dict[str, str | None] = {}
+        self._listed = False
 
     def list_servers(self) -> list[PlexServerInfo]:
-        account = MyPlexAccount(token=self._token)
+        try:
+            resources = list(MyPlexAccount(token=self._token).resources())
+        except Exception:  # noqa: BLE001
+            raise PlexUnreachable("cannot list Plex servers from plex.tv") from None
+        self._listed = True
         out: list[PlexServerInfo] = []
-        for r in account.resources():
+        for r in resources:
             if "server" not in (r.provides or ""):
                 continue
             self._access_tokens[r.clientIdentifier] = r.accessToken
@@ -227,9 +251,14 @@ class PlexApiGateway:
         return out
 
     def connect(self, server: PlexServerInfo, timeout: float) -> PlexConnection:
-        if server.machine_id not in self._access_tokens:
+        if server.machine_id not in self._access_tokens and not self._listed:
             self.list_servers()
-        access_token = self._access_tokens.get(server.machine_id) or self._token
+        access_token = self._access_tokens.get(server.machine_id)
+        if not access_token:
+            # The account token is only ever sent to servers the user owns.
+            if not server.owned:
+                raise PlexUnreachable(f"no access token for Plex server {server.name!r}")
+            access_token = self._token
         tried: list[str] = []
         for conn in order_connections(server.connections):
             tried.append(strip_query(conn.uri))
@@ -238,7 +267,7 @@ class PlexApiGateway:
             except Exception as exc:  # noqa: BLE001 - plexapi raises many types
                 log.info("plex connect failed: server=%s uri=%s err=%s", server.name, tried[-1], type(exc).__name__)
                 continue
-            return PlexApiConnection(plex, via_relay=conn.relay)
+            return PlexApiConnection(plex, via_relay=conn.relay, name=server.name)
         raise PlexUnreachable(
             f"cannot reach Plex server {server.name!r}; tried: {', '.join(tried) or 'no connections'}"
         )

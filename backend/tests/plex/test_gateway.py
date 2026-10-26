@@ -213,3 +213,64 @@ def test_fake_gateway_fail_after_pages_and_unreachable():
     with pytest.raises(PlexUnreachable):
         gw.connect(b, 1)
     assert sum(len(p) for p in gw.connect(c, 1).iter_items("movie", 2)) == 5
+
+
+def test_iter_items_midscan_error_maps_to_unreachable():
+    import requests
+
+    good = [_item([_media("1080", 1)], ratingKey=i) for i in (1, 2)]
+    conn, _ = _conn_with_section([good, requests.ReadTimeout("http://h/?X-Plex-Token=SECRET")])
+    conn._name = "Srv"
+    it = conn.iter_items("1", 2)
+    assert len(next(it)) == 2
+    with pytest.raises(PlexUnreachable) as ei:
+        next(it)
+    assert "Srv" in str(ei.value) and "SECRET" not in str(ei.value)
+    assert ei.value.__cause__ is None
+
+
+def test_episodes_error_maps_to_unreachable():
+    server = MagicMock()
+    server.fetchItems.side_effect = ConnectionError("http://h/?X-Plex-Token=SECRET")
+    with pytest.raises(PlexUnreachable) as ei:
+        PlexApiConnection(server, False, "Srv").episodes("5")
+    assert "SECRET" not in str(ei.value)
+
+
+def test_list_servers_failure_has_clear_tokenless_error():
+    with patch("overlaparr.plex.gateway.MyPlexAccount", side_effect=OSError("token=SECRET")):
+        with pytest.raises(PlexUnreachable) as ei:
+            PlexApiGateway("SECRET").list_servers()
+    assert "plex.tv" in str(ei.value) and "SECRET" not in str(ei.value)
+
+
+def test_connect_unknown_machine_id_not_owned_never_uses_account_token():
+    gw = PlexApiGateway("acct")
+    srv = PlexServerInfo("zzz", "Shared", False, [PlexConnInfo("http://x", False, False)])
+    with patch("overlaparr.plex.gateway.MyPlexAccount") as acct, patch("overlaparr.plex.gateway.PlexServer") as ps:
+        acct.return_value.resources.return_value = []
+        with pytest.raises(PlexUnreachable):
+            gw.connect(srv, 1)
+        with pytest.raises(PlexUnreachable):
+            gw.connect(srv, 1)
+        assert acct.call_count == 1  # listed once, not on every connect
+    ps.assert_not_called()
+
+
+def test_connect_resource_without_access_token_not_owned_raises():
+    gw = PlexApiGateway("acct")
+    srv = PlexServerInfo("m1", "Shared", False, [PlexConnInfo("http://x", False, False)])
+    with patch("overlaparr.plex.gateway.MyPlexAccount") as acct, patch("overlaparr.plex.gateway.PlexServer") as ps:
+        acct.return_value.resources.return_value = [_resource("server", "m1", "Shared", token=None)]
+        with pytest.raises(PlexUnreachable):
+            gw.connect(srv, 1)
+    ps.assert_not_called()
+
+
+def test_connect_owned_without_access_token_uses_account_token():
+    gw = PlexApiGateway("acct")
+    srv = PlexServerInfo("m1", "Mine", True, [PlexConnInfo("http://x", True, False)])
+    with patch("overlaparr.plex.gateway.MyPlexAccount") as acct, patch("overlaparr.plex.gateway.PlexServer") as ps:
+        acct.return_value.resources.return_value = [_resource("server", "m1", "Mine", token=None)]
+        gw.connect(srv, 1)
+    assert ps.call_args.args[1] == "acct"
