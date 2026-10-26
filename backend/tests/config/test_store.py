@@ -193,3 +193,17 @@ def test_watcher_applies_external_edit(paths):
         assert store.current.scan.page_size == 77
     finally:
         stop()
+
+
+def test_set_secret_refreshes_current(paths):
+    store = make_store(
+        paths, "plex:\n  token: !secret plex_token\n", "plex_token: old\n"
+    )
+    seen = []
+    store.subscribe(seen.append)
+    store.set_secret("plex_token", "new")
+    assert store.current.plex.token == "new"
+    assert [c.plex.token for c in seen] == ["new"]
+    # an unreferenced secret does not trigger a notification
+    store.set_secret("unrelated", "x")
+    assert len(seen) == 1

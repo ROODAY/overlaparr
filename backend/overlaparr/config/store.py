@@ -354,6 +354,18 @@ class ConfigStore:
         with self._lock:
             self._secrets[key] = value
             self._write_secrets()
+            # config.yaml may reference this key: re-resolve so current isn't stale.
+            try:
+                _, cfg = self._read_disk()
+            except ConfigInvalidOnDisk as e:
+                self._error = str(e)
+                return
+            self._error = None
+            self._remember_disk()
+            if cfg == self._current:
+                return
+            self._current = cfg
+        self._notify(cfg)
 
     def secret_values(self) -> list[str]:
         """Every resolved secret string (for log redaction)."""
