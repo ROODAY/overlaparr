@@ -3,10 +3,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from overlaparr.config.schema import (
     AppConfig,
+    DigestSchedule,
     DiscordConn,
     InstanceConfig,
+    LoggingConfig,
     NotificationConnection,
     Rule,
+    ScanConfig,
     TagsConfig,
     new_id,
 )
@@ -98,3 +101,48 @@ def test_notification_connection_discriminated():
 def test_new_id():
     assert len(new_id()) == 12
     assert new_id() != new_id()
+
+
+def test_tag_name_rejects_trailing_newline():
+    with pytest.raises(ValidationError):
+        TagsConfig(dupe="dupe\n")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"weekday": 7},
+        {"weekday": -1},
+        {"time": "24:00"},
+        {"time": "9:00"},
+        {"time": "09:60"},
+        {"time": "09:00\n"},
+        {"mode": "cron"},
+    ],
+)
+def test_digest_schedule_rejects_invalid(kwargs):
+    with pytest.raises(ValidationError):
+        DigestSchedule(**kwargs)
+
+
+def test_digest_schedule_accepts_valid():
+    DigestSchedule(mode="weekly", weekday=6, time="23:59")
+    DigestSchedule(mode="cron", cron="0 9 * * 1")
+
+
+@pytest.mark.parametrize(
+    "field", ["server_timeout_seconds", "server_index_budget_seconds", "page_size", "stale_after_hours"]
+)
+def test_scan_numbers_must_be_positive(field):
+    with pytest.raises(ValidationError):
+        ScanConfig(**{field: 0})
+
+
+def test_logging_bounds_and_level():
+    with pytest.raises(ValidationError):
+        LoggingConfig(max_bytes=0)
+    with pytest.raises(ValidationError):
+        LoggingConfig(backup_count=-1)
+    with pytest.raises(ValidationError):
+        LoggingConfig(level="VERBOSE")
+    LoggingConfig(level="DEBUG", backup_count=0)

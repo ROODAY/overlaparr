@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def config_dir() -> Path:
-    return Path(os.environ.get("OVERLAPARR_CONFIG_DIR", "/config"))
+    return Path(os.environ.get("OVERLAPARR_CONFIG_DIR") or "/config")
 
 
 def config_file() -> Path:

@@ -12,7 +12,8 @@ from pydantic import (
     model_validator,
 )
 
-_TAG_RE = re.compile(r"^[a-z0-9-]+$")
+_TAG_RE = re.compile(r"[a-z0-9-]+")
+_HHMM_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 _HTTP_URL = TypeAdapter(AnyHttpUrl)
 
 
@@ -66,10 +67,10 @@ class InstanceConfig(_Base):
 
 class ScanConfig(_Base):
     cron: str = "0 */6 * * *"
-    server_timeout_seconds: int = 10
-    server_index_budget_seconds: int = 600
-    page_size: int = 500
-    stale_after_hours: int = 48
+    server_timeout_seconds: int = Field(default=10, gt=0)
+    server_index_budget_seconds: int = Field(default=600, gt=0)
+    page_size: int = Field(default=500, gt=0)
+    stale_after_hours: int = Field(default=48, gt=0)
 
 
 class TagsConfig(_Base):
@@ -82,7 +83,7 @@ class TagsConfig(_Base):
     @field_validator("dupe", "partial", "ignore")
     @classmethod
     def _tag_name(cls, v: str) -> str:
-        if not _TAG_RE.match(v):
+        if not _TAG_RE.fullmatch(v):
             raise ValueError("tag names must match ^[a-z0-9-]+$")
         return v
 
@@ -127,8 +128,21 @@ class NotifyEvents(_Base):
 class DigestSchedule(_Base):
     mode: Literal["off", "daily", "weekly", "cron"] = "off"
     time: str = "09:00"
-    weekday: int = 0
+    weekday: int = Field(default=0, ge=0, le=6)
     cron: str | None = None
+
+    @field_validator("time")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        if not _HHMM_RE.fullmatch(v):
+            raise ValueError("time must be HH:MM (00:00-23:59)")
+        return v
+
+    @model_validator(mode="after")
+    def _cron_required(self) -> "DigestSchedule":
+        if self.mode == "cron" and not self.cron:
+            raise ValueError("mode=cron requires cron")
+        return self
 
 
 class _ConnBase(_Base):
@@ -184,9 +198,9 @@ class NotificationsConfig(_Base):
 
 
 class LoggingConfig(_Base):
-    level: str = "INFO"
-    max_bytes: int = 10485760
-    backup_count: int = 5
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    max_bytes: int = Field(default=10485760, gt=0)
+    backup_count: int = Field(default=5, ge=0)
 
 
 class ActionLogConfig(_Base):
