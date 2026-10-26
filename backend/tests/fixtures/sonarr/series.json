@@ -1,0 +1,49 @@
+[
+  {
+    "id": 5,
+    "title": "Severance",
+    "year": 2022,
+    "tvdbId": 371980,
+    "tmdbId": 95396,
+    "imdbId": "tt11280740",
+    "monitored": true,
+    "qualityProfileId": 2,
+    "tags": [
+      1
+    ],
+    "titleSlug": "severance",
+    "images": [
+      {
+        "coverType": "banner",
+        "remoteUrl": "https://img.example/banner.jpg"
+      },
+      {
+        "coverType": "poster",
+        "remoteUrl": "https://img.example/sev.jpg"
+      }
+    ],
+    "statistics": {
+      "seasonCount": 2,
+      "episodeFileCount": 1,
+      "episodeCount": 2,
+      "sizeOnDisk": 1500000000
+    }
+  },
+  {
+    "id": 6,
+    "title": "Empty Show",
+    "year": 2020,
+    "tvdbId": 1,
+    "monitored": false,
+    "qualityProfileId": 1,
+    "tags": [],
+    "titleSlug": "empty-show",
+    "images": [],
+    "statistics": {
+      "seasonCount": 1,
+      "episodeFileCount": 0,
+      "episodeCount": 1,
+      "sizeOnDisk": 0
+    }
+  }
+]

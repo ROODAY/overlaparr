@@ -1,0 +1,58 @@
+[
+  {
+    "id": 11,
+    "title": "Blade Runner",
+    "year": 1982,
+    "tmdbId": 78,
+    "imdbId": "tt0083658",
+    "monitored": true,
+    "hasFile": true,
+    "qualityProfileId": 2,
+    "tags": [
+      1,
+      2
+    ],
+    "titleSlug": "78",
+    "images": [
+      {
+        "coverType": "fanart",
+        "remoteUrl": "https://img.example/fanart.jpg"
+      },
+      {
+        "coverType": "poster",
+        "remoteUrl": "https://img.example/poster.jpg"
+      }
+    ],
+    "movieFile": {
+      "id": 101,
+      "movieId": 11,
+      "size": 12345678901,
+      "edition": "Director's Cut",
+      "quality": {
+        "quality": {
+          "id": 3,
+          "name": "WEBDL-1080p",
+          "source": "web",
+          "resolution": 1080
+        },
+        "revision": {
+          "version": 1,
+          "real": 0
+        }
+      }
+    }
+  },
+  {
+    "id": 12,
+    "title": "Wanted Movie",
+    "year": 2024,
+    "tmdbId": 999,
+    "imdbId": "tt9999999",
+    "monitored": true,
+    "hasFile": false,
+    "qualityProfileId": 3,
+    "tags": [],
+    "titleSlug": "999",
+    "images": []
+  }
+]

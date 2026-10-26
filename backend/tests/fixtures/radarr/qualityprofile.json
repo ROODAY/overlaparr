@@ -1,0 +1,83 @@
+[
+  {
+    "id": 1,
+    "name": "Any",
+    "upgradeAllowed": false,
+    "cutoff": 1,
+    "items": [
+      {
+        "quality": {
+          "id": 1,
+          "name": "SDTV",
+          "source": "television",
+          "resolution": 480
+        },
+        "items": [],
+        "allowed": true
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "name": "HD-1080p",
+    "upgradeAllowed": true,
+    "cutoff": 1000,
+    "items": [
+      {
+        "quality": {
+          "id": 4,
+          "name": "HDTV-720p",
+          "source": "television",
+          "resolution": 720
+        },
+        "items": [],
+        "allowed": true
+      },
+      {
+        "id": 1000,
+        "name": "WEB 1080p",
+        "allowed": true,
+        "items": [
+          {
+            "quality": {
+              "id": 15,
+              "name": "WEBRip-1080p",
+              "source": "webRip",
+              "resolution": 1080
+            },
+            "items": [],
+            "allowed": true
+          },
+          {
+            "quality": {
+              "id": 3,
+              "name": "WEBDL-1080p",
+              "source": "web",
+              "resolution": 1080
+            },
+            "items": [],
+            "allowed": true
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "name": "Ultra-HD",
+    "upgradeAllowed": true,
+    "cutoff": 19,
+    "items": [
+      {
+        "quality": {
+          "id": 19,
+          "name": "Bluray-2160p",
+          "source": "bluray",
+          "resolution": 2160
+        },
+        "items": [],
+        "allowed": true
+      }
+    ]
+  }
+]

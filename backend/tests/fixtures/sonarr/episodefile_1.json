@@ -1,0 +1,20 @@
+[
+  {
+    "id": 9001,
+    "seriesId": 5,
+    "seasonNumber": 1,
+    "size": 1500000000,
+    "quality": {
+      "quality": {
+        "id": 3,
+        "name": "WEBDL-1080p",
+        "source": "web",
+        "resolution": 1080
+      },
+      "revision": {
+        "version": 1,
+        "real": 0
+      }
+    }
+  }
+]
