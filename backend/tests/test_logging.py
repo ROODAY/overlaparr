@@ -143,3 +143,35 @@ def test_install_secret_redaction_registers_and_follows_reload():
     for cb in store.subs:
         cb(None)
     assert redact("a secondsecret b") == "a *** b"
+
+
+@pytest.mark.parametrize(
+    "text,secret",
+    [
+        ('{"apikey": "abc12345"}', "abc12345"),
+        ("{'token': 'abc12345'}", "abc12345"),
+        ('apikey="abc12345"', "abc12345"),
+        ('{"X-Plex-Token":"abc12345","a":1}', "abc12345"),
+    ],
+)
+def test_redacts_quoted_forms(text, secret):
+    out = redact(text)
+    assert secret not in out
+    assert "***" in out
+
+
+def test_redact_keeps_quotes():
+    assert redact('{"apikey": "abc12345"}') == '{"apikey": "***"}'
+
+
+def test_bad_log_args_do_not_raise(tmp_path):
+    path = tmp_path / "overlaparr.log"
+    configure_logging(LoggingConfig(), path)
+    logging.raiseExceptions = False
+    try:
+        logging.getLogger("overlaparr.test").info("%d token=secret999", "x")
+    finally:
+        logging.raiseExceptions = True
+    _flush()
+    text = path.read_text()
+    assert "secret999" not in text

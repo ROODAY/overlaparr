@@ -20,7 +20,7 @@ MIN_SECRET_LEN = 6
 
 _KEYED_RE = re.compile(
     r"(?P<key>X-Plex-Token|X-Api-Key|apikey|api_key|token|password)"
-    r"(?P<sep>\s*[=:]\s*)"
+    r"(?P<sep>[\"']?\s*[=:]\s*[\"']?)"
     r"(?P<val>[^\s&\"',;]+)",
     re.IGNORECASE,
 )
@@ -62,7 +62,12 @@ class RedactingFilter(logging.Filter):
     """Redacts message, args and formatted exception text of every record."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = redact(record.getMessage())
+        try:
+            msg = record.getMessage()
+        except Exception:
+            # Mismatched args: don't raise into app code (filters run outside emit's guard).
+            msg = f"{record.msg} {record.args}"
+        record.msg = redact(msg)
         record.args = None
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
