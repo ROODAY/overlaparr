@@ -1,0 +1,10 @@
+.superpowers/
+.worktrees/
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+backend/overlaparr/static/
+tmp-config/
