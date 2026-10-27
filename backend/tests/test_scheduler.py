@@ -164,3 +164,33 @@ def test_retention_job(make, dbf):
     job = s.scheduler.get_job("retention")
     f = fields(job.trigger)
     assert (f["hour"], f["minute"]) == ("3", "30")
+
+
+def _weekdays(expr, n=14):
+    # isoweekday: Mon=1 .. Sun=7
+    return {r.isoweekday() for r in next_runs(expr, n)}
+
+
+@pytest.mark.parametrize("expr,expected", [
+    ("0 9 * * 0", {7}),
+    ("0 9 * * 7", {7}),
+    ("0 9 * * 1-5", {1, 2, 3, 4, 5}),
+    ("0 9 * * 5-7", {5, 6, 7}),
+    ("0 9 * * fri-mon", {5, 6, 7, 1}),
+    ("0 9 * * 1,3", {1, 3}),
+    ("0 9 * * */2", {7, 2, 4, 6}),
+    ("0 9 * * 1-5/2", {1, 3, 5}),
+    ("0 9 * * *", {1, 2, 3, 4, 5, 6, 7}),
+    ("0 9 * * sat", {6}),
+])
+def test_standard_cron_weekdays(expr, expected):
+    assert _weekdays(expr) == expected
+
+
+def test_six_field_cron_rejected():
+    with pytest.raises(ValueError):
+        next_runs("0 0 9 * * 1")
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"scan": {"cron": "0 0 9 * * 1"}})
+    with pytest.raises(ValueError):
+        next_runs("0 9 * * 8")

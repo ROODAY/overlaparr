@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from overlaparr.config.schema import AppConfig
 from overlaparr.config.store import ConfigStore
-from overlaparr.cron import next_runs
+from overlaparr.cron import build_trigger, next_runs
 from overlaparr.db.models import ActionLog, NotificationLog, PendingEvent
 from overlaparr.notify.digest import send_digest
 from overlaparr.scan.engine import ScanEngine
@@ -83,7 +83,7 @@ class AppScheduler:
         with self._lock:
             for job in self.scheduler.get_jobs():
                 job.remove()
-            self._add("scan", self._scan, CronTrigger.from_crontab(cfg.scan.cron, self.tz))
+            self._add("scan", self._scan, build_trigger(cfg.scan.cron, self.tz))
             self._add("retention", self._retention, CronTrigger(hour=3, minute=30, timezone=self.tz))
             for conn in cfg.notifications.connections:
                 trigger = self._digest_trigger(conn.digest)
@@ -98,7 +98,7 @@ class AppScheduler:
         if d.mode == "off":
             return None
         if d.mode == "cron":
-            return CronTrigger.from_crontab(d.cron, self.tz)
+            return build_trigger(d.cron, self.tz)
         hour, minute = (int(x) for x in d.time.split(":"))
         dow = d.weekday if d.mode == "weekly" else None
         return CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=self.tz)
