@@ -17,7 +17,7 @@ from overlaparr.config.schema import AppConfig, InstanceConfig, Rule
 from overlaparr.db.models import ActionLog, Finding, FindingServerIgnore, TrackedEpisode, TrackedItem
 from overlaparr.logging_setup import redact
 
-__all__ = ["ActionError", "ActionRequest", "execute", "find_instance"]
+__all__ = ["ActionError", "ActionRequest", "execute", "find_instance", "validate_request"]
 
 ActionName = Literal[
     "unmonitor", "delete", "exclude", "tag", "ignore", "ignore_server", "mark_reviewed",
@@ -98,6 +98,15 @@ def _validate_arr(db: Session, finding: Finding, inst: InstanceConfig | None,
     unknown = sorted(set(req.episode_ids) - known)
     if unknown:
         raise ActionError(f"Episodes {unknown} do not belong to this series")
+
+
+def validate_request(db: Session, cfg: AppConfig, finding: Finding, req: ActionRequest) -> None:
+    """Raise ``ActionError`` when ``execute`` would reject ``req`` before any *arr call."""
+    if req.action in REVIEW_ACTIONS:
+        if req.action == "ignore_server" and not req.server_id:
+            raise ActionError("ignore_server requires a server_id")
+        return
+    _validate_arr(db, finding, find_instance(cfg, finding.instance_id), req)
 
 
 def _arr(db: Session, cfg: AppConfig, finding: Finding, inst: InstanceConfig | None,

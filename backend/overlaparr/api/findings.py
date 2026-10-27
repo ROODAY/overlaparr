@@ -59,6 +59,13 @@ def _label(labels: dict[str, str], server_id: str) -> str:
     return labels.get(server_id, server_id)
 
 
+def file_key(ep: TrackedEpisode) -> tuple:
+    """Identity of an episode's file: several episodes can share one (multi-episode files)."""
+    if ep.episode_file_id is not None:
+        return (ep.instance_id, "file", ep.episode_file_id)
+    return (ep.instance_id, "episode", ep.episode_arr_id)
+
+
 def _best(values: list[int | None]) -> int | None:
     known = [v for v in values if v is not None]
     return max(known) if known else None
@@ -110,8 +117,9 @@ def _yours(ctx: _Context, f: Finding, item: TrackedItem | None) -> dict:
     if f.type != "on_disk":
         return {"resolution": None, "size": None}
     eps = ctx.relevant_episodes(f)
+    files = {file_key(e): e.file_size or 0 for e in eps}  # multi-episode files count once
     return {"resolution": res_label(_best([e.resolution for e in eps])),
-            "size": sum(e.file_size or 0 for e in eps)}
+            "size": sum(files.values())}
 
 
 def _elsewhere(ctx: _Context, f: Finding) -> list[dict]:
@@ -169,15 +177,19 @@ def finding_row(ctx: _Context, f: Finding) -> dict:
 
 
 def _size_expr():
-    """Your on-disk size: movie file, or summed relevant episode files for on_disk series."""
+    """Your on-disk size: movie file, or relevant episode files (each once) for on_disk series."""
     rel = func.json_each(Finding.relevant_episode_ids).table_valued("value")
-    series_size = (
-        select(func.sum(TrackedEpisode.file_size))
+    file_id = func.coalesce(TrackedEpisode.episode_file_id, -TrackedEpisode.episode_arr_id)
+    per_file = (
+        select(func.max(TrackedEpisode.file_size).label("size"))
         .select_from(TrackedEpisode)
         .join(rel, TrackedEpisode.episode_arr_id == rel.c.value)
         .where(TrackedEpisode.instance_id == Finding.instance_id)
-        .scalar_subquery()
+        .group_by(file_id)
+        .correlate(Finding)
+        .subquery()
     )
+    series_size = select(func.sum(per_file.c.size)).scalar_subquery()
     return case((Finding.kind == "movie", TrackedItem.file_size),
                 (Finding.type == "on_disk", series_size), else_=None)
 
