@@ -68,7 +68,7 @@ def _undo_rows(ctx: ScanContext, f: Finding, rows: list[ActionLog],
     """Undo each row; returns (any undone ok, ids that were set back to monitored)."""
     any_ok, remonitored = False, []
     for orig in rows:
-        scope, prior = dict(orig.scope), dict(orig.prior_state)
+        scope, prior, action = dict(orig.scope), dict(orig.prior_state), orig.action
         try:
             row = undo(ctx.db, ctx.config, orig.id, "auto", client_for)
         except UndoError as e:
@@ -79,15 +79,15 @@ def _undo_rows(ctx: ScanContext, f: Finding, rows: list[ActionLog],
         if row.result != "ok":
             continue
         any_ok = True
-        if f.kind == "movie" or scope.get("scope") == "episodes":  # not series-level ids
+        # Mirrors undo: only a series-level unmonitor stores series ids, not episode ids.
+        if f.kind == "movie" or not (action == "unmonitor" and scope.get("scope") == "item"):
             remonitored += [int(k) for k, v in (prior.get("monitored") or {}).items() if v is True]
     return any_ok, remonitored
 
 
-def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig) -> list[str]:
+def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig, taken: list[str]) -> None:
     lh, db = inst.loss_handling, ctx.db
     client_for = borrowed_client_for(ctx.clients)
-    taken: list[str] = []
     remonitored: list[int] = []
 
     if lh.remonitor:
@@ -103,7 +103,7 @@ def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig) -> list[str]:
 
     client = ctx.clients.get(inst.id)
     if client is None:
-        return taken
+        return
     if lh.quality_profile_id is not None:
         item = _item(db, f)
         prior = {"quality_profile_id": item.quality_profile_id if item is not None else None}
@@ -116,11 +116,9 @@ def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig) -> list[str]:
             _record(ctx, f, "quality_profile", scope, prior, "ok",
                     f"quality profile set to {lh.quality_profile_id}")
             taken.append("quality_profile")
-    if lh.search:
-        if f.kind == "movie":
-            ids = [f.arr_id]
-        else:
-            ids = sorted(set(remonitored)) or list(f.relevant_episode_ids)
+    ids = [f.arr_id] if f.kind == "movie" else (
+        sorted(set(remonitored)) or list(f.relevant_episode_ids))
+    if lh.search and ids:
         scope = {"ids": ids}
         try:
             client.search(ids) if f.kind == "movie" else client.search_episodes(ids)
@@ -129,7 +127,6 @@ def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig) -> list[str]:
         else:
             _record(ctx, f, "search", scope, {}, "ok", f"searched {len(ids)} item(s)")
             taken.append("search")
-    return taken
 
 
 def _notify(ctx: ScanContext, f: Finding, taken: list[str]) -> None:
@@ -154,7 +151,7 @@ def handle_losses(ctx: ScanContext) -> None:
         try:
             inst = find_instance(ctx.config, f.instance_id)
             if inst is not None and ctx.instance_ok.get(inst.id) is True:
-                taken = _handle(ctx, f, inst)
+                _handle(ctx, f, inst, taken)
         except Exception as e:  # noqa: BLE001 - loss handling must never fail the scan
             ctx.db.rollback()
             log.error("loss handling failed for finding %s: %s", finding_id, redact(str(e)))

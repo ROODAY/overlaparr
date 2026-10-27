@@ -245,3 +245,31 @@ def test_not_triggered_by_offline_server(tmp_path):
         assert list(db.scalars(select(PendingEvent))) == []
     assert env.findings()[0].lifecycle == "active"
     env.eng.dispose()
+
+
+@respx.mock
+def test_series_delete_row_remonitored_episodes_are_searched(db, make_env):
+    f = add_finding(db, instance="s1", arr_id=5, kind="series", title="Severance",
+                    relevant_episode_ids=[501, 502])
+    f.lifecycle = "lost"
+    add_episodes(db)
+    db.add(ActionLog(actor="auto", instance_id="s1", instance_name="My Sonarr",
+                     finding_id=f.id, arr_id=5, item_title="Severance", action="delete",
+                     scope={"scope": "item"},
+                     prior_state={"monitored": {"501": True, "503": True}}, result="ok",
+                     undoable=True))
+    db.commit()
+    respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    post = respx.post(f"{S}/api/v3/command").respond(json={})
+    make_env(loss={"remonitor": True, "search": True}).run([f.id])
+    assert body(post) == {"name": "EpisodeSearch", "episodeIds": [501, 503]}
+
+
+@respx.mock
+def test_search_skipped_when_nothing_to_search(db, make_env):
+    f = add_finding(db, instance="s1", arr_id=5, kind="series", title="Severance")
+    f.lifecycle = "lost"
+    db.commit()
+    make_env(loss={"search": True}).run([f.id])
+    assert non_get_calls() == [] and len(logs(db)) == 0
+    assert events(db)[0].payload["actions_taken"] == []
