@@ -1,4 +1,5 @@
 import json
+import ssl
 from unittest.mock import MagicMock
 
 import httpx
@@ -76,6 +77,8 @@ def test_email_multipart(monkeypatch):
     send(_email("starttls"), msg(html="<b>hi</b>"))
     cls.assert_called_once_with("smtp.test", 25, timeout=20)
     smtp.starttls.assert_called_once()
+    ctx = smtp.starttls.call_args.kwargs["context"]
+    assert ctx.check_hostname and ctx.verify_mode == ssl.CERT_REQUIRED
     smtp.login.assert_called_once_with("u", "pw-secret-1")
     m = smtp.send_message.call_args.args[0]
     assert m["Subject"] == "Title" and m["From"] == "a@x.com"
@@ -90,6 +93,8 @@ def test_email_ssl_and_none(monkeypatch):
     monkeypatch.setattr(channels.smtplib, "SMTP", plain_cls)
     send(_email("ssl"), msg())
     ssl_cls.assert_called_once()
+    ctx = ssl_cls.call_args.kwargs["context"]
+    assert ctx.check_hostname and ctx.verify_mode == ssl.CERT_REQUIRED
     conn = _email("none").model_copy(update={"username": None})
     send(conn, msg())
     s = plain_cls.return_value.__enter__.return_value
@@ -154,3 +159,20 @@ def test_retry_succeeds_second_attempt(db):
     assert send_with_retry(db, conn, msg(), "x", sleep=lambda s: None) is True
     rows = db.scalars(select(NotificationLog)).all()
     assert len(rows) == 1 and rows[0].success and rows[0].error is None
+
+
+def test_smtp_password_scrubbed_from_error(monkeypatch):
+    cls = MagicMock(side_effect=OSError("auth failed for pw-secret-1"))
+    monkeypatch.setattr(channels.smtplib, "SMTP", cls)
+    with pytest.raises(NotifyError) as ei:
+        send(_email("starttls"), msg())
+    assert "pw-secret-1" not in str(ei.value)
+
+
+@respx.mock
+def test_retry_degenerate_args_never_raise(db):
+    conn = DiscordConn(id="d", name="d", type="discord", webhook_url=HOOK)
+    respx.post(HOOK).respond(500)
+    assert send_with_retry(db, conn, msg(), "x", attempts=0, backoff=()) is False
+    assert send_with_retry(db, conn, msg(), "x", attempts=2, backoff=()) is False
+    assert len(db.scalars(select(NotificationLog)).all()) == 2
