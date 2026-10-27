@@ -71,9 +71,9 @@ class InstanceSnapshot:
     skipped_ids: set[int] = field(default_factory=set)  # malformed items; keep their rows
 
 
-def make_client(inst: InstanceConfig) -> RadarrClient | SonarrClient:
+def make_client(inst: InstanceConfig, dry_run: bool = False) -> RadarrClient | SonarrClient:
     cls = RadarrClient if inst.type == "radarr" else SonarrClient
-    return cls(inst.url.rstrip("/"), inst.api_key, timeout=TIMEOUT)
+    return cls(inst.url.rstrip("/"), inst.api_key, timeout=TIMEOUT, dry_run=dry_run)
 
 
 def _poster(images: list[dict] | None) -> str | None:
