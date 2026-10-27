@@ -12,6 +12,8 @@ from pydantic import (
     model_validator,
 )
 
+from overlaparr.cron import validate_cron
+
 _TAG_RE = re.compile(r"[a-z0-9-]+")
 _HHMM_RE = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 _HTTP_URL = TypeAdapter(AnyHttpUrl)
@@ -72,6 +74,11 @@ class ScanConfig(_Base):
     page_size: int = Field(default=500, gt=0)
     stale_after_hours: int = Field(default=48, gt=0)
 
+    @field_validator("cron")
+    @classmethod
+    def _valid_cron(cls, v: str) -> str:
+        return validate_cron(v)
+
 
 class TagsConfig(_Base):
     enabled: bool = False
@@ -130,6 +137,11 @@ class DigestSchedule(_Base):
     time: str = "09:00"
     weekday: int = Field(default=0, ge=0, le=6)
     cron: str | None = None
+
+    @field_validator("cron")
+    @classmethod
+    def _valid_cron(cls, v: str | None) -> str | None:
+        return v if v is None else validate_cron(v)
 
     @field_validator("time")
     @classmethod
