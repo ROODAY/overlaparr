@@ -73,7 +73,9 @@ def undo(
     orig = db.get(ActionLog, log_id)
     if orig is None:
         raise UndoError(f"Action {log_id} not found")
-    if not (orig.undoable and orig.undone_at is None and orig.result == "ok"):
+    # An error row is undoable only for a monitoring change applied before the failure.
+    partial = orig.result == "error" and bool(orig.prior_state.get("monitored"))
+    if not (orig.undoable and orig.undone_at is None and (orig.result == "ok" or partial)):
         raise UndoError("This action cannot be undone")
     finding = db.get(Finding, orig.finding_id) if orig.finding_id is not None else None
     row = ActionLog(
@@ -106,7 +108,8 @@ def undo(
             client.close()
     if row.result == "ok":
         orig.undone_at = utcnow()
-        if orig.actor == "auto" and finding is not None:
+        # Hold only when a person reverses automation, not when automation undoes itself.
+        if orig.actor == "auto" and actor != "auto" and finding is not None:
             finding.automation_hold = True
     db.add(row)
     db.commit()

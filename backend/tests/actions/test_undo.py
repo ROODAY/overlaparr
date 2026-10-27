@@ -211,3 +211,30 @@ def test_undo_arr_error_logged_and_original_kept(db, cfg):
     db.refresh(orig)
     assert orig.undone_at is None
     assert db.get(Finding, f.id).automation_hold is False
+
+
+def test_auto_undo_of_auto_action_does_not_set_hold(db, cfg):
+    f = add_finding(db)
+    done = execute(db, cfg, ActionRequest(f.id, "ignore"), "auto")
+    row = undo(db, cfg, done.id, actor="auto")
+    assert row.result == "ok" and row.actor == "auto"
+    db.refresh(f)
+    assert f.automation_hold is False
+
+
+@respx.mock
+def test_undo_partial_delete_failure_restores_monitoring(db, cfg):
+    f = add_finding(db, instance="s1", arr_id=5, kind="series", title="Severance")
+    add_episodes(db)
+    respx.get(f"{S}/api/v3/episode").respond(json=[episode(501, True, 9001)])
+    respx.get(f"{S}/api/v3/episodefile").respond(json=[episode_file(9001)])
+    mon = respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    respx.delete(f"{S}/api/v3/episodefile/bulk").respond(500)
+    done = execute(db, cfg, ActionRequest(f.id, "delete", scope="episodes",
+                                          episode_ids=[501]), "ui")
+    assert done.result == "error"
+    row = undo(db, cfg, done.id)
+    assert row.result == "ok", row.message
+    assert body(mon) == {"episodeIds": [501], "monitored": True}
+    db.refresh(done)
+    assert done.undone_at is not None

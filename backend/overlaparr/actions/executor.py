@@ -117,7 +117,7 @@ def _arr(db: Session, cfg: AppConfig, finding: Finding, inst: InstanceConfig | N
     finally:
         row.prior_state = dict(ctx.prior)  # partial state is kept even on failure
         client.close()
-    if not dry_run:
+    if not dry_run and outcome.changed:  # a no-op leaves the finding untouched
         finding.review_state = "actioned"
         if req.action == "delete" and req.delete_mode == "remove_item":
             finding.lifecycle = "removed"
@@ -168,7 +168,9 @@ def execute(
             undoable, message = _arr(db, cfg, finding, inst, req, row, dry_run, client_for)
     except (ArrError, ActionError) as e:
         db.rollback()  # discard any half-applied DB change; the row is still transient
-        row.result, row.message, row.undoable = "error", redact(str(e)), False
+        row.result, row.message = "error", redact(str(e))
+        # A monitoring change applied before the failure stays undoable.
+        row.undoable = not dry_run and bool(row.prior_state.get("monitored"))
     else:
         row.result = "dry_run" if dry_run else "ok"
         row.undoable = undoable and not dry_run

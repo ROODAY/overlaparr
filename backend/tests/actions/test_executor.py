@@ -70,6 +70,8 @@ def test_unmonitor_movie_already_unmonitored_no_write(db, cfg):
     assert row.result == "ok" and row.prior_state == {"monitored": {}}
     assert not row.undoable
     assert non_get_calls() == []
+    db.refresh(f)
+    assert f.review_state == "new"  # nothing changed in Radarr
 
 
 @respx.mock
@@ -162,8 +164,53 @@ def test_delete_files_series_item_unmonitors_episodes_not_series(db, cfg):
     row = execute(db, cfg, ActionRequest(f.id, "delete"), "ui")
     assert row.result == "ok", row.message
     assert body(dele) == {"episodeFileIds": [9001, 9003]}
-    assert body(mon) == {"episodeIds": [501, 502], "monitored": False}
-    assert row.prior_state["monitored"] == {"501": True, "502": True}
+    # Only episodes whose files were deleted: 502 (monitored, no file) keeps
+    # grabbing, so a continuing series still picks up new episodes.
+    assert body(mon) == {"episodeIds": [501], "monitored": False}
+    assert row.prior_state["monitored"] == {"501": True}
+
+
+@respx.mock
+def test_delete_files_partial_failure_keeps_monitoring_undoable(db, cfg):
+    f = series_finding(db)
+    respx.get(f"{S}/api/v3/episode").respond(
+        json=[episode(501, True, 9001), episode(503, False, 9003)]
+    )
+    respx.get(f"{S}/api/v3/episodefile").respond(json=[episode_file(9001), episode_file(9003)])
+    respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    respx.delete(f"{S}/api/v3/episodefile/bulk").respond(500)
+    row = execute(db, cfg, ActionRequest(f.id, "delete", scope="episodes",
+                                         episode_ids=[501, 503]), "ui")
+    assert row.result == "error"
+    assert not row.prior_state.get("deleted")
+    assert row.prior_state["monitored"] == {"501": True}
+    assert row.undoable
+    db.refresh(f)
+    assert f.review_state == "new"
+
+
+@respx.mock
+def test_delete_files_nothing_to_do_is_noop(db, cfg):
+    f = add_finding(db)
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie(monitored=False, has_file=False))
+    row = execute(db, cfg, ActionRequest(f.id, "delete"), "ui")
+    assert row.result == "ok" and not row.undoable
+    assert row.prior_state == {"deleted": [], "monitored": {}}
+    assert non_get_calls() == []
+    db.refresh(f)
+    assert f.review_state == "new"
+
+
+@respx.mock
+def test_delete_files_without_monitoring_change_not_undoable(db, cfg):
+    f = add_finding(db)
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie(monitored=False))
+    respx.delete(f"{R}/api/v3/moviefile/77").respond(200)
+    row = execute(db, cfg, ActionRequest(f.id, "delete"), "ui")
+    assert row.result == "ok" and not row.undoable
+    assert [d["file_id"] for d in row.prior_state["deleted"]] == [77]
+    db.refresh(f)
+    assert f.review_state == "actioned"
 
 
 @respx.mock
@@ -243,6 +290,8 @@ def test_exclude_already_excluded_skips(db, cfg):
     row = execute(db, cfg, ActionRequest(f.id, "exclude"), "ui")
     assert row.result == "ok" and row.message == "already excluded"
     assert not row.undoable and non_get_calls() == []
+    db.refresh(f)
+    assert f.review_state == "new"
 
 
 @respx.mock
@@ -265,6 +314,29 @@ def test_tag_already_present_records_nothing(db, cfg):
     row = execute(db, cfg, ActionRequest(f.id, "tag"), "ui")
     assert row.result == "ok" and row.prior_state == {} and not row.undoable
     assert non_get_calls() == []
+    db.refresh(f)
+    assert f.review_state == "new"
+
+
+@respx.mock
+def test_tag_write_failure_records_no_tags_added(db, cfg):
+    f = add_finding(db)
+    respx.get(f"{R}/api/v3/tag").respond(json=[{"id": 4, "label": "dupe-elsewhere"}])
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie())
+    respx.put(f"{R}/api/v3/movie/editor").respond(500)
+    row = execute(db, cfg, ActionRequest(f.id, "tag"), "ui")
+    assert row.result == "error" and "tags_added" not in row.prior_state
+    assert not row.undoable
+
+
+@respx.mock
+def test_unmonitor_write_failure_records_nothing(db, cfg):
+    f = add_finding(db)
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie())
+    respx.put(f"{R}/api/v3/movie/editor").respond(500)
+    row = execute(db, cfg, ActionRequest(f.id, "unmonitor"), "ui")
+    assert row.result == "error" and not row.prior_state.get("monitored")
+    assert not row.undoable
 
 
 @respx.mock
