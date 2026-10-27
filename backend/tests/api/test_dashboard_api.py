@@ -121,3 +121,18 @@ def test_instance_ok_from_latest_run_with_instances(authed):
     d = authed.get("/api/v1/dashboard").json()
     assert d["last_scan"]["status"] == "failed"
     assert d["instances"] == [{"id": "r1", "name": "Radarr", "ok": False}]
+
+
+def test_reclaimable_counts_shared_episode_file_once(authed):
+    from overlaparr.db.models import TrackedEpisode
+
+    app = authed.app
+    with app.state.db_factory() as db:
+        _finding(db, 50, instance_id="s1", kind="series", relevant_episode_ids=[1, 2, 3])
+        for ep_id, file_id, size in ((1, 7, 500), (2, 7, 500), (3, None, 200)):
+            # Episodes 1 and 2 are one multi-episode file, reported on both.
+            db.add(TrackedEpisode(instance_id="s1", series_arr_id=50, episode_arr_id=ep_id,
+                                  season=1, episode=ep_id, title=f"E{ep_id}", has_file=True,
+                                  episode_file_id=file_id, file_size=size))
+        db.commit()
+    assert authed.get("/api/v1/dashboard").json()["reclaimable_bytes"] == 700

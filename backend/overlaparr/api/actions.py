@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from overlaparr.actions.executor import ActionError, ActionRequest, execute, validate_request
 from overlaparr.api.activity import log_row
 from overlaparr.api.deps import get_db, get_store
-from overlaparr.api.findings import file_key
 from overlaparr.arr.snapshot import make_client
 from overlaparr.config.store import ConfigStore
 from overlaparr.db.models import Finding, TrackedEpisode, TrackedItem
+from overlaparr.stats import episode_files_bytes
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -78,7 +78,7 @@ def preview_actions(body: ActionsBody, db: Session = Depends(get_db),
 
     episodes: set[tuple[int, int]] = set()  # (finding id, episode arr id)
     movies: set[int] = set()  # finding ids whose movie file goes
-    files: dict[tuple, int] = {}  # file key -> size; each file counted once
+    deleted: dict[tuple[str, int], TrackedEpisode] = {}  # episodes losing their file
     for req in valid:
         f = findings[req.finding_id]
         delete = req.action == "delete"
@@ -99,9 +99,9 @@ def preview_actions(body: ActionsBody, db: Session = Depends(get_db),
             targets = []
         episodes.update((f.id, ep.episode_arr_id) for ep in targets)
         if delete:
-            files.update((file_key(ep), ep.file_size or 0) for ep in targets)
+            deleted.update(((ep.instance_id, ep.episode_arr_id), ep) for ep in targets)
 
-    total = sum(files.values())
+    total = episode_files_bytes(deleted.values())  # shared files count once
     for f in (findings[i] for i in movies):
         total += db.scalar(select(TrackedItem.file_size).where(
             TrackedItem.instance_id == f.instance_id, TrackedItem.arr_id == f.arr_id)) or 0

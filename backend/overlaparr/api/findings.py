@@ -25,6 +25,7 @@ from overlaparr.db.models import (
     TrackedItem,
 )
 from overlaparr.domain.quality import Res
+from overlaparr.stats import episode_files_bytes
 
 router = APIRouter(prefix="/findings", tags=["findings"])
 
@@ -57,13 +58,6 @@ def _labels(db: Session, cfg: AppConfig) -> dict[str, str]:
 
 def _label(labels: dict[str, str], server_id: str) -> str:
     return labels.get(server_id, server_id)
-
-
-def file_key(ep: TrackedEpisode) -> tuple:
-    """Identity of an episode's file: several episodes can share one (multi-episode files)."""
-    if ep.episode_file_id is not None:
-        return (ep.instance_id, "file", ep.episode_file_id)
-    return (ep.instance_id, "episode", ep.episode_arr_id)
 
 
 def _best(values: list[int | None]) -> int | None:
@@ -117,9 +111,8 @@ def _yours(ctx: _Context, f: Finding, item: TrackedItem | None) -> dict:
     if f.type != "on_disk":
         return {"resolution": None, "size": None}
     eps = ctx.relevant_episodes(f)
-    files = {file_key(e): e.file_size or 0 for e in eps}  # multi-episode files count once
     return {"resolution": res_label(_best([e.resolution for e in eps])),
-            "size": sum(files.values())}
+            "size": episode_files_bytes(eps)}
 
 
 def _elsewhere(ctx: _Context, f: Finding) -> list[dict]:
