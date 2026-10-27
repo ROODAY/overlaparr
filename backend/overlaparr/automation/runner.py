@@ -13,12 +13,18 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from overlaparr.actions.executor import EPISODE_SCOPE_ACTIONS, ActionRequest, execute
+from overlaparr.actions.executor import (
+    EPISODE_SCOPE_ACTIONS,
+    ActionError,
+    ActionRequest,
+    execute,
+    find_instance,
+)
 from overlaparr.arr.snapshot import make_client
 from overlaparr.automation.rules import RuleMatch, evaluate
 from overlaparr.config.schema import AppConfig, InstanceConfig, Rule
@@ -82,9 +88,41 @@ def _remonitored(db: Session, f: Finding, row: ActionLog) -> bool:
     ).limit(1)) is not None
 
 
+def clear_hold(db: Session, cfg: AppConfig, finding_id: int,
+               actor: Literal["ui", "auto"] = "ui") -> ActionLog:
+    """Lift a finding's automation hold and log a marker row.
+
+    Hold detection ignores automatic actions logged before the latest marker, so a
+    cleared hold stays cleared until automation changes monitoring again.
+    """
+    f = db.get(Finding, finding_id)
+    if f is None:
+        raise ActionError(f"Finding {finding_id} not found")
+    inst = find_instance(cfg, f.instance_id)
+    item = db.scalar(select(TrackedItem).where(
+        TrackedItem.instance_id == f.instance_id, TrackedItem.arr_id == f.arr_id
+    ))
+    row = ActionLog(
+        actor=actor, instance_id=f.instance_id,
+        instance_name=inst.name if inst else f.instance_id, finding_id=f.id, arr_id=f.arr_id,
+        item_title=item.title if item else f"{f.kind} {f.arr_id}", action="clear_hold",
+        scope={}, prior_state={"automation_hold": f.automation_hold}, result="ok",
+        undoable=False,
+    )
+    f.automation_hold = False
+    db.add(row)
+    db.commit()
+    return row
+
+
 def detect_manual_changes(ctx: ScanContext) -> list[int]:
     """Hold findings whose latest automatic unmonitor/delete was re-monitored by the user."""
     db = ctx.db
+    cleared: dict[int, int] = {}
+    for finding_id, row_id in db.execute(select(ActionLog.finding_id, ActionLog.id).where(
+        ActionLog.action == "clear_hold", ActionLog.finding_id.is_not(None),
+    )):
+        cleared[finding_id] = max(row_id, cleared.get(finding_id, 0))
     rows = db.scalars(select(ActionLog).where(
         ActionLog.actor == "auto",
         ActionLog.result == "ok",
@@ -95,6 +133,8 @@ def detect_manual_changes(ctx: ScanContext) -> list[int]:
     latest: dict[int, ActionLog] = {}
     for row in rows:
         # A later no-op row records nothing, so the last row that changed monitoring counts.
+        if row.id <= cleared.get(row.finding_id, 0):
+            continue  # the user cleared the hold after this action
         if row.finding_id not in latest and (row.prior_state.get("monitored") or {}):
             latest[row.finding_id] = row
     held: list[int] = []
@@ -221,17 +261,23 @@ def _load(db: Session, findings: list[Finding]) -> tuple[dict, dict]:
     return copies, ignores
 
 
-def _run_rule(ctx: ScanContext, rule: Rule, dry_run: bool, written: list[ActionLog]) -> None:
+def _run_rule(ctx: ScanContext, rule: Rule, preview: bool, written: list[ActionLog]) -> bool:
+    """Run one rule; False when it was skipped without evaluating anything.
+
+    ``preview`` (a ``dry_run_next`` run) logs what the rule would do now, ignoring
+    ``wait_scans`` and leaving its wait counters untouched.
+    """
     db = ctx.db
     if rule.action == "delete" and not rule.delete_confirmed:
         log.warning("rule %s skipped: delete rules require delete_confirmed", rule.id)
-        return
+        return False
+    dry_run = preview or ctx.dry_run
     ok = [iid for iid, good in ctx.instance_ok.items() if good is True]
     findings = list(db.scalars(
         select(Finding).where(Finding.instance_id.in_(ok)).order_by(Finding.id)
     ))
     copies, ignores = _load(db, findings)
-    states = {s.finding_id: s for s in db.scalars(
+    states = {} if preview else {s.finding_id: s for s in db.scalars(
         select(RuleState).where(RuleState.rule_id == rule.id)
     )}
     client_for = _client_for(ctx)
@@ -239,19 +285,21 @@ def _run_rule(ctx: ScanContext, rule: Rule, dry_run: bool, written: list[ActionL
         m = evaluate(rule, f, copies[f.id], ignores[f.id], list(f.relevant_episode_ids))
         state = states.get(f.id)
         if m is None:
-            if state is not None:
+            if state is not None and not preview:
                 db.delete(state)
                 db.commit()
             continue
-        ready = _count(ctx, rule, m, state)
-        db.commit()  # keep the counter even if the action below fails and rolls back
-        if not ready:
-            continue
+        if not preview:
+            ready = _count(ctx, rule, m, state)
+            db.commit()  # keep the counter even if the action below fails and rolls back
+            if not ready:
+                continue
         req = _request(rule, f, m)
         if _already_done(db, f, req):
             continue
         written.append(execute(db, ctx.config, req, "auto", rule=rule, scan_id=ctx.scan_id,
                                dry_run=dry_run, client_for=client_for))
+    return True
 
 
 def _consume_dry_run_flag(ctx: ScanContext, rule_id: str) -> None:
@@ -278,18 +326,18 @@ def run_rules(ctx: ScanContext) -> list[ActionLog]:
         # Acting without knowing about manual changes could undo the user's own edits.
         log.error("scan %s: hold detection failed, rules skipped: %s", ctx.scan_id,
                   redact(str(e)))
-        return
+        return []
     written: list[ActionLog] = []
     for rule in ctx.config.rules:
         if not (rule.enabled or rule.dry_run_next):
             continue
-        dry_run = ctx.dry_run or rule.dry_run_next
+        preview = rule.dry_run_next and not ctx.dry_run
         try:
-            _run_rule(ctx, rule, dry_run, written)  # rows land in written even if it fails
+            ran = _run_rule(ctx, rule, preview, written)  # rows land in written even on failure
         except Exception as e:  # noqa: BLE001 - one broken rule must not stop the others
             ctx.db.rollback()
             log.error("scan %s: rule %s failed: %s", ctx.scan_id, rule.id, redact(str(e)))
             continue
-        if rule.dry_run_next and not ctx.dry_run:
+        if preview and ran:
             _consume_dry_run_flag(ctx, rule.id)
     return written

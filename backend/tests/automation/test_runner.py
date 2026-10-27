@@ -7,6 +7,7 @@ from sqlalchemy import select
 from overlaparr.arr.snapshot import make_client
 from overlaparr.automation import runner
 from overlaparr.automation.runner import detect_manual_changes, run_rules
+from overlaparr.config.schema import AppConfig
 from overlaparr.config.store import ConfigStore
 from overlaparr.db.models import (
     ActionLog,
@@ -17,6 +18,7 @@ from overlaparr.db.models import (
     TrackedItem,
 )
 from overlaparr.db.session import init_db, make_engine, make_sessionmaker
+from overlaparr.logging_setup import register_secret
 from overlaparr.scan.engine import ScanContext
 from overlaparr.scan.reconcile import ReconcileResult
 from tests.actions.helpers import (
@@ -374,7 +376,8 @@ def test_rules_run_in_order_and_later_still_eligible(db, make_env):
 
 
 @respx.mock
-def test_rule_failure_is_isolated(db, make_env, monkeypatch):
+def test_rule_failure_is_isolated(db, make_env, monkeypatch, caplog):
+    register_secret("bare-secret-value-77")
     env = make_env([rule("ru1", action="exclude"), rule("ru2")])
     movie_finding(db)
     mock_movie_unmonitor()
@@ -382,12 +385,14 @@ def test_rule_failure_is_isolated(db, make_env, monkeypatch):
 
     def boom(db_, cfg, req, *a, **kw):
         if req.action == "exclude":
-            raise RuntimeError("kaboom apikey=sonarrkey123")
+            raise RuntimeError("kaboom apikey=sonarrkey123 bare-secret-value-77")
         return real(db_, cfg, req, *a, **kw)
 
     monkeypatch.setattr(runner, "execute", boom)
     rows = env.run(1)
     assert [r.rule_id for r in rows] == ["ru2"]
+    assert "kaboom" in caplog.text and "rule ru1 failed" in caplog.text
+    assert "sonarrkey123" not in caplog.text and "bare-secret-value-77" not in caplog.text
 
 
 @respx.mock
@@ -412,3 +417,80 @@ def test_unconfirmed_delete_skipped_at_runtime(db, make_env, caplog):
     assert run_rules(ctx) == []
     assert respx.calls.call_count == 0
     assert "delete_confirmed" in caplog.text
+
+
+def auto_unmonitor_row(db, f, eps=("501",)):
+    db.add(ActionLog(actor="auto", rule_id="ru1", rule_name="R", instance_id="s1",
+                     instance_name="My Sonarr", finding_id=f.id, arr_id=5, item_title="Severance",
+                     action="unmonitor", scope={"scope": "episodes", "episode_ids": [501, 502]},
+                     prior_state={"monitored": {e: True for e in eps}}, result="ok",
+                     undoable=True))
+    db.commit()
+
+
+@respx.mock
+def test_cleared_hold_sticks_until_new_auto_change(db, make_env):
+    env = make_env([rule()])
+    f = remonitor_setup(db)
+    for ep in db.scalars(select(TrackedEpisode)):
+        ep.monitored = True
+    db.commit()
+    assert detect_manual_changes(env.ctx(2)) == [f.id]
+    marker = runner.clear_hold(db, env.store.current, f.id)
+    assert (marker.action, marker.result, marker.actor, marker.undoable) == (
+        "clear_hold", "ok", "ui", False)
+    assert (marker.instance_name, marker.item_title, marker.arr_id) == ("My Sonarr", "Severance", 5)
+    db.refresh(f)
+    assert not f.automation_hold
+    assert detect_manual_changes(env.ctx(3)) == []  # still monitored, but the user cleared it
+    auto_unmonitor_row(db, f, eps=("502",))  # a later automatic unmonitor ...
+    assert detect_manual_changes(env.ctx(4)) == [f.id]  # ... re-monitored again: held again
+
+
+def test_clear_hold_unknown_finding(db):
+    with pytest.raises(runner.ActionError):
+        runner.clear_hold(db, AppConfig(), 99)
+
+
+@respx.mock
+def test_hold_detection_failure_returns_empty(db, make_env, monkeypatch):
+    env = make_env([rule()])
+    movie_finding(db)
+
+    def boom(ctx):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(runner, "detect_manual_changes", boom)
+    assert env.run(1) == []
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+def test_dry_run_next_ignores_wait_and_rule_state(db, make_env):
+    env = make_env([rule(enabled=False, dry_run_next=True, wait_scans=3)])
+    f = movie_finding(db)
+    db.add(RuleState(rule_id="ru1", finding_id=f.id, consecutive_scans=1, coverage_hash="x",
+                     last_counted_scan_id=1))
+    db.commit()
+    mock_movie_unmonitor()
+    rows = env.run(2)
+    assert [r.result for r in rows] == ["dry_run"]  # acts despite wait_scans=3
+    s = state(db)
+    assert (s.consecutive_scans, s.coverage_hash, s.last_counted_scan_id) == (1, "x", 1)
+
+
+@respx.mock
+def test_dry_run_next_creates_no_rule_state(db, make_env):
+    env = make_env([rule(enabled=False, dry_run_next=True, wait_scans=2)])
+    movie_finding(db)
+    mock_movie_unmonitor()
+    assert len(env.run(1)) == 1
+    assert state(db) is None
+
+
+@respx.mock
+def test_unconfirmed_delete_keeps_dry_run_flag(db, make_env):
+    env = make_env([rule(enabled=False, action="delete", dry_run_next=True)])
+    movie_finding(db)
+    assert env.run(1) == []
+    assert env.store.current.rules[0].dry_run_next is True
