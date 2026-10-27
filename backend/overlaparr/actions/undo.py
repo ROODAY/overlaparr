@@ -34,10 +34,10 @@ def _undo_review(db: Session, orig: ActionLog, finding: Finding, row: ActionLog)
     return f"review state restored to '{finding.review_state}'"
 
 
-def _undo_arr(orig: ActionLog, client: RadarrClient | SonarrClient) -> str:
+def _undo_arr(orig: ActionLog, client: RadarrClient | SonarrClient, is_radarr: bool) -> str:
     prior = orig.prior_state
     if orig.action in ("unmonitor", "delete"):
-        if isinstance(client, RadarrClient):
+        if is_radarr:  # not isinstance: a borrowed client is a proxy
             setter = client.set_movies_monitored
         elif orig.action == "unmonitor" and orig.scope.get("scope") == "item":
             setter = client.set_series_monitored
@@ -101,7 +101,7 @@ def undo(
             raise UndoError(f"Instance '{orig.instance_name}' no longer configured")
         client = client_for(inst, dry_run=False)
         try:
-            row.result, row.message = "ok", _undo_arr(orig, client)
+            row.result, row.message = "ok", _undo_arr(orig, client, inst.type == "radarr")
         except ArrError as e:
             row.result, row.message = "error", redact(str(e))
         finally:

@@ -13,7 +13,7 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,9 +25,9 @@ from overlaparr.actions.executor import (
     execute,
     find_instance,
 )
-from overlaparr.arr.snapshot import make_client
+from overlaparr.actions.borrowed import client_for as borrowed_client_for
 from overlaparr.automation.rules import RuleMatch, evaluate
-from overlaparr.config.schema import AppConfig, InstanceConfig, Rule
+from overlaparr.config.schema import AppConfig, Rule
 from overlaparr.db.models import (
     ActionLog,
     Finding,
@@ -45,26 +45,8 @@ log = logging.getLogger(__name__)
 _LIVE = {"online", "degraded"}
 
 
-class _Borrowed:
-    """A scan-owned client lent to ``execute``, which closes clients when done."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._client, name)
-
-    def close(self) -> None:  # the scan engine closes the real client
-        pass
-
-
 def _client_for(ctx: ScanContext) -> Callable:
-    def get(inst: InstanceConfig, dry_run: bool = False) -> Any:
-        if dry_run or inst.id not in ctx.clients:
-            return make_client(inst, dry_run=dry_run)
-        return _Borrowed(ctx.clients[inst.id])
-
-    return get
+    return borrowed_client_for(ctx.clients)
 
 
 # ----- hold detection ---------------------------------------------------------
