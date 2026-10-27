@@ -224,9 +224,9 @@ def test_keep_relevant_replaces_rule_for_kept_type():
     out = match_episodes(series(), episodes, server, ONLINE, Res.R1080, NOW,
                          keep_relevant={("sonarr", 5, "wanted_elsewhere"): [1, 2, 99]})
     f = by_type(out)["wanted_elsewhere"]
-    assert f.relevant_episode_ids == [1, 2]  # 99 no longer exists
+    assert f.relevant_episode_ids == [1]  # 2 now has a file, 99 no longer exists
     q = {c.episode_arr_id: c.quality for c in f.copies}
-    assert q == {1: "worse", 2: "better"}  # no file: vs cutoff; file: vs own resolution
+    assert q == {1: "worse"}  # vs cutoff
     # other type unaffected by the keep
     assert by_type(out)["on_disk"].relevant_episode_ids == [2]
 
@@ -238,3 +238,11 @@ def test_keep_relevant_on_disk_after_file_deleted():
                          keep_relevant={("sonarr", 5, "on_disk"): [1]})
     f = by_type(out)["on_disk"]
     assert f.relevant_episode_ids == [1] and f.copies[0].quality == "better"
+
+
+def test_keep_relevant_wanted_all_downloaded_not_emitted():
+    episodes = [ep(1, tvdb_id=11, has_file=True, res=Res.R1080)]
+    server = {"s1": [sep(1, 1, 11, res=Res.R2160)]}
+    out = match_episodes(series(), episodes, server, ONLINE, Res.R1080, NOW,
+                         keep_relevant={("sonarr", 5, "wanted_elsewhere"): [1]})
+    assert "wanted_elsewhere" not in by_type(out)

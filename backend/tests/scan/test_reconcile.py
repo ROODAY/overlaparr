@@ -396,3 +396,77 @@ def test_keep_keys(db):
     keys, relevant = keep_keys(db)
     assert keys == {("radarr", 1, "wanted_elsewhere"), ("radarr", 3, "wanted_elsewhere")}
     assert relevant[("radarr", 3, "wanted_elsewhere")] == [7, 8]
+
+
+SON = {"ok": {"sonarr": True}, "conf": {"sonarr"}}
+
+
+def _series_finding(db, *eps, type="wanted_elsewhere", relevant=(1, 2), covered=(1,),
+                    review_state=None):
+    track(db, arr_id=5, instance="sonarr", kind="series")
+    db.add_all(eps)
+    db.commit()
+    run(db, [cf(*[copy("s1", ep=e) for e in covered], instance="sonarr", arr_id=5,
+                kind="series", type=type, relevant=relevant)], **SON)
+    f = finding(db, arr_id=5, instance="sonarr")
+    if review_state:
+        f.review_state = review_state
+        db.commit()
+    return f
+
+
+def _episode_row(db, eid):
+    return db.scalar(select(TrackedEpisode).where(TrackedEpisode.episode_arr_id == eid))
+
+
+def test_series_actioned_downloaded_wanted_resolved(db):
+    f = _series_finding(db, _episode(1), relevant=(1,), review_state="actioned")
+    e = _episode_row(db, 1)
+    e.has_file, e.monitored = True, False
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.resolved_ids == [f.id] and res.lost_ids == []
+
+
+def test_series_covered_episode_downloaded_others_wanted_resolved(db):
+    # ep1, ep2 wanted; s1 has ep1; user downloads ep1 -> only ep2 wanted, no copies
+    f = _series_finding(db, _episode(1), _episode(2))
+    _episode_row(db, 1).has_file = True
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.resolved_ids == [f.id] and res.lost_ids == []
+
+
+def test_series_on_disk_covered_files_deleted_outside_resolved(db):
+    f = _series_finding(db, _episode(1, has_file=True), _episode(2, has_file=True),
+                        type="on_disk")
+    _episode_row(db, 1).has_file = False
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.resolved_ids == [f.id] and res.lost_ids == []
+
+
+def test_series_actioned_on_disk_file_deleted_by_us_lost(db):
+    f = _series_finding(db, _episode(1, has_file=True), type="on_disk", relevant=(1,),
+                        review_state="actioned")
+    _episode_row(db, 1).has_file = False
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.lost_ids == [f.id]
+
+
+def test_series_covered_still_wanted_copy_vanished_lost(db):
+    f = _series_finding(db, _episode(1), _episode(2), review_state="actioned")
+    _episode_row(db, 1).monitored = False  # unmonitored by our action, still missing
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.lost_ids == [f.id] and res.resolved_ids == []
+    assert [(c.episode_arr_id, c.stale) for c in copies(db, f)] == [(1, True)]
+
+
+def test_series_covered_not_wanted_non_actioned_resolved(db):
+    f = _series_finding(db, _episode(1), _episode(2))
+    _episode_row(db, 1).monitored = False  # user unmonitored the covered episode
+    db.commit()
+    res = run(db, [], scan_id=2, now=NOW, **SON)
+    assert res.resolved_ids == [f.id]

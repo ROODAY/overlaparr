@@ -73,30 +73,41 @@ def keep_keys(db: Session) -> tuple[set[Key], dict[Key, list[int]]]:
     return set(relevant), relevant
 
 
-def _precondition_gone(db: Session, f: Finding, item: TrackedItem, now: datetime) -> bool:
+def _precondition_gone(
+    db: Session, f: Finding, item: TrackedItem, prior: list[FindingCopy], now: datetime
+) -> bool:
     """True when the finding no longer applies for arr-side reasons (not a lost copy).
 
-    Actioned findings are kept by the matchers regardless of monitoring, so for them only
-    a downloaded file (movie wanted) or vanished relevant episodes (series) resolve them.
+    Actioned findings are kept by the matchers regardless of monitoring (and, for on_disk,
+    regardless of the file Overlaparr may have deleted); a download still resolves them.
+    Series are judged on the episodes the finding previously covered, not the whole series.
     """
     actioned = f.review_state == "actioned"
     if f.kind == "movie":
         if f.type == "wanted_elsewhere":
             return bool(item.has_file) or (not actioned and not item.monitored)
         return not actioned and not item.has_file
-    episodes = list(
-        db.scalars(
-            select(TrackedEpisode).where(
-                TrackedEpisode.instance_id == f.instance_id,
-                TrackedEpisode.series_arr_id == f.arr_id,
-            )
+    covered = {c.episode_arr_id for c in prior if c.episode_arr_id is not None}
+    if not covered:
+        return True
+    episodes = db.scalars(
+        select(TrackedEpisode).where(
+            TrackedEpisode.instance_id == f.instance_id,
+            TrackedEpisode.series_arr_id == f.arr_id,
+            TrackedEpisode.episode_arr_id.in_(covered),
         )
     )
-    if actioned:
-        return not set(f.relevant_episode_ids) & {e.episode_arr_id for e in episodes}
     if f.type == "wanted_elsewhere":
-        return not any(is_wanted_episode(e, now) for e in episodes)
-    return not any(e.has_file for e in episodes)
+        if actioned:
+            still = [
+                e for e in episodes
+                if not e.has_file and e.air_date_utc is not None and e.air_date_utc <= now
+            ]
+        else:
+            still = [e for e in episodes if is_wanted_episode(e, now)]
+    else:
+        still = [e for e in episodes if actioned or e.has_file]
+    return not still
 
 
 def reconcile(
@@ -219,11 +230,11 @@ def _reconcile(
             # Matching skips ignore-tagged items: no loss/resolved decision, keep everything.
             f.review_state = "ignored"
         elif f.lifecycle == "active":
-            if _precondition_gone(db, f, item, now):
+            prior = old_copies.get(f.id, [])
+            if _precondition_gone(db, f, item, prior, now):
                 f.lifecycle = "resolved"
                 result.resolved_ids.append(f.id)
                 continue
-            prior = old_copies.get(f.id, [])
             # Copies and summary columns are kept as the last-known state.
             for c in prior:
                 c.stale = True

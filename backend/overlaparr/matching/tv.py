@@ -141,6 +141,9 @@ def match_episodes(
         kept = (keep_relevant or {}).get((series.instance_id, series.arr_id, ftype))
         if kept is not None:
             relevant = [by_id[i] for i in dict.fromkeys(kept) if i in by_id]
+            if ftype == "wanted_elsewhere":
+                # A downloaded episode is no longer wanted, even for an actioned finding.
+                relevant = [e for e in relevant if not e.has_file]
         copies: list[ComputedCopy] = []
         for e in sorted(relevant, key=lambda e: e.episode_arr_id):
             if kept is not None:
