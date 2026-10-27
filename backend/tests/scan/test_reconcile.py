@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -5,6 +7,7 @@ from overlaparr.db.models import (
     Finding,
     FindingCopy,
     FindingServerIgnore,
+    IndexItem,
     RuleState,
     TrackedEpisode,
     TrackedItem,
@@ -12,11 +15,14 @@ from overlaparr.db.models import (
 from overlaparr.db.session import init_db, make_engine, make_sessionmaker
 from overlaparr.domain.quality import Res
 from overlaparr.domain.types import ComputedCopy, ComputedFinding
-from overlaparr.scan.reconcile import ReconcileResult, reconcile
+from overlaparr.matching.movies import MovieIndex, match_movies
+from overlaparr.scan.reconcile import ReconcileResult, keep_keys, reconcile
 
 ONLINE = {"s1": "online", "s2": "online"}
 OK = {"radarr": True}
 CONF = {"radarr"}
+NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
+PAST = NOW - timedelta(days=30)
 
 
 @pytest.fixture
@@ -28,8 +34,9 @@ def db(tmp_path):
     eng.dispose()
 
 
-def track(db, arr_id=1, instance="radarr", kind="movie"):
-    db.add(TrackedItem(instance_id=instance, arr_id=arr_id, kind=kind, title="X", seen_scan_id=1))
+def track(db, arr_id=1, instance="radarr", kind="movie", monitored=True, has_file=False):
+    db.add(TrackedItem(instance_id=instance, arr_id=arr_id, kind=kind, title="X", seen_scan_id=1,
+                       monitored=monitored, has_file=has_file))
     db.commit()
 
 
@@ -50,8 +57,8 @@ def cf(*copies, arr_id=1, instance="radarr", kind="movie", type="wanted_elsewher
     )
 
 
-def run(db, computed, scan_id=1, status=ONLINE, ok=OK, conf=CONF, ignored=frozenset()):
-    return reconcile(db, computed, scan_id, status, ok, set(conf), set(ignored))
+def run(db, computed, scan_id=1, status=ONLINE, ok=OK, conf=CONF, ignored=frozenset(), now=None):
+    return reconcile(db, computed, scan_id, status, ok, set(conf), set(ignored), now=now)
 
 
 def finding(db, arr_id=1, instance="radarr"):
@@ -136,8 +143,12 @@ def test_lost_only_when_all_prior_servers_reachable(db):
     db.commit()
     res = run(db, [], scan_id=2, status={"s1": "online", "s2": "degraded"})
     f = finding(db)
-    assert res.lost_ids == [f.id]
+    assert res.lost_ids == [f.id] and res.resolved_ids == []
     assert f.lifecycle == "lost" and f.review_state == "reviewed"
+    # last-known copies and summary kept, copies marked stale
+    cs = copies(db, f)
+    assert {c.server_id for c in cs} == {"s1", "s2"} and all(c.stale for c in cs)
+    assert (f.covered_count, f.coverage, f.best_quality) == (1, "full", "better")
 
 
 def test_offline_server_keeps_copies_stale(db):
@@ -231,11 +242,157 @@ def test_lost_reactivates_when_copy_returns(db):
 def test_ignore_tag_sets_ignored(db):
     track(db)
     track(db, arr_id=2)
-    run(db, [cf(copy("s1")), cf(copy("s1"), arr_id=2)], ignored={("radarr", 1)})
-    assert finding(db).review_state == "ignored"
-    assert finding(db, arr_id=2).review_state == "new"
+    run(db, [cf(copy("s1")), cf(copy("s1"), arr_id=2)])
     f2 = finding(db, arr_id=2)
     f2.review_state = "reviewed"
     db.commit()
-    run(db, [cf(copy("s1")), cf(copy("s1"), arr_id=2)], scan_id=2, ignored={("radarr", 2)})
-    assert finding(db, arr_id=2).review_state == "ignored"
+    # matching skips tagged items, so the tagged item has no computed finding
+    res = run(db, [cf(copy("s1"))], scan_id=2, ignored={("radarr", 2)})
+    f2 = finding(db, arr_id=2)
+    assert f2.review_state == "ignored" and f2.lifecycle == "active"
+    assert res.lost_ids == [] and res.resolved_ids == []
+    assert [(c.server_id, c.stale) for c in copies(db, f2)] == [("s1", False)]
+    assert f2.covered_count == 1
+    assert finding(db).review_state == "new"
+
+
+def test_ignore_tag_on_new_computed_finding(db):
+    track(db)
+    run(db, [cf(copy("s1"))], ignored={("radarr", 1)})
+    assert finding(db).review_state == "ignored"
+
+
+def test_user_unmonitored_wanted_resolved_not_lost(db):
+    track(db)
+    run(db, [cf(copy("s1"))])
+    db.scalar(select(TrackedItem)).monitored = False
+    db.commit()
+    res = run(db, [], scan_id=2)
+    f = finding(db)
+    assert res.resolved_ids == [f.id] and res.lost_ids == []
+    assert f.lifecycle == "resolved"
+    assert [c.stale for c in copies(db, f)] == [False]
+
+
+def test_downloaded_wanted_resolved(db):
+    track(db)
+    run(db, [cf(copy("s1"))])
+    db.scalar(select(TrackedItem)).has_file = True
+    db.commit()
+    res = run(db, [], scan_id=2)
+    assert res.resolved_ids == [finding(db).id] and finding(db).lifecycle == "resolved"
+
+
+def test_actioned_downloaded_wanted_resolved(db):
+    track(db)
+    run(db, [cf(copy("s1"))])
+    f = finding(db)
+    f.review_state = "actioned"
+    item = db.scalar(select(TrackedItem))
+    item.has_file, item.monitored = True, False
+    db.commit()
+    res = run(db, [], scan_id=2)
+    assert res.resolved_ids == [finding(db).id]
+
+
+def test_on_disk_file_deleted_resolved(db):
+    track(db, has_file=True)
+    run(db, [cf(copy("s1"), type="on_disk")])
+    db.scalar(select(TrackedItem)).has_file = False
+    db.commit()
+    res = run(db, [], scan_id=2)
+    assert res.resolved_ids == [finding(db).id]
+
+
+def test_resolved_reactivates_when_computed_again(db):
+    track(db)
+    run(db, [cf(copy("s1"))])
+    db.scalar(select(TrackedItem)).monitored = False
+    db.commit()
+    run(db, [], scan_id=2)
+    db.scalar(select(TrackedItem)).monitored = True
+    db.commit()
+    res = run(db, [cf(copy("s1"))], scan_id=3)
+    f = finding(db)
+    assert f.lifecycle == "active" and res.updated_ids == [f.id]
+
+
+def _match(db):
+    keep, _ = keep_keys(db)
+    items = list(db.scalars(select(TrackedItem)))
+    rows = [IndexItem(server_id="s1", kind="movie", rating_key="k", title="X", tmdb=10,
+                      resolution=int(Res.R2160))]
+    return match_movies(items, MovieIndex.build(rows), ONLINE, None, keep=keep)
+
+
+def test_actioned_unmonitored_by_us_stays_active_via_keep(db):
+    db.add(TrackedItem(instance_id="radarr", arr_id=1, kind="movie", title="X", tmdb=10,
+                       monitored=True, seen_scan_id=1))
+    db.commit()
+    run(db, _match(db))
+    f = finding(db)
+    f.review_state = "actioned"  # our action unmonitored it
+    db.scalar(select(TrackedItem)).monitored = False
+    db.commit()
+    computed = _match(db)
+    assert len(computed) == 1
+    res = run(db, computed, scan_id=2)
+    f = finding(db)
+    assert f.lifecycle == "active" and res.updated_ids == [f.id]
+    assert res.lost_ids == [] and res.resolved_ids == []
+
+
+def test_actioned_copies_gone_lost_with_copies_retained(db):
+    track(db)
+    run(db, [cf(copy("s1"))])
+    f = finding(db)
+    f.review_state = "actioned"
+    db.scalar(select(TrackedItem)).monitored = False
+    db.commit()
+    res = run(db, [], scan_id=2)
+    f = finding(db)
+    assert res.lost_ids == [f.id] and f.lifecycle == "lost"
+    assert f.review_state == "actioned"
+    assert [(c.server_id, c.stale) for c in copies(db, f)] == [("s1", True)]
+
+
+def _episode(eid, monitored=True, has_file=False, air=PAST):
+    return TrackedEpisode(instance_id="sonarr", series_arr_id=5, episode_arr_id=eid, season=1,
+                          episode=eid, title="e", monitored=monitored, has_file=has_file,
+                          air_date_utc=air)
+
+
+def test_series_wanted_resolved_vs_lost(db):
+    track(db, arr_id=5, instance="sonarr", kind="series")
+    db.add_all([_episode(1), _episode(2)])
+    db.commit()
+    ok, conf = {"sonarr": True}, {"sonarr"}
+    run(db, [cf(copy("s1", ep=1), instance="sonarr", arr_id=5, kind="series", relevant=[1, 2])],
+        ok=ok, conf=conf)
+    # episode 2 still wanted, copies gone -> lost
+    res = run(db, [], scan_id=2, ok=ok, conf=conf, now=NOW)
+    f = finding(db, arr_id=5, instance="sonarr")
+    assert res.lost_ids == [f.id]
+    # back to active, then nothing wanted any more -> resolved
+    run(db, [cf(copy("s1", ep=1), instance="sonarr", arr_id=5, kind="series", relevant=[1, 2])],
+        scan_id=3, ok=ok, conf=conf)
+    for e in db.scalars(select(TrackedEpisode)):
+        e.monitored = False
+    db.commit()
+    res = run(db, [], scan_id=4, ok=ok, conf=conf, now=NOW)
+    assert res.resolved_ids == [f.id]
+
+
+def test_keep_keys(db):
+    track(db)
+    track(db, arr_id=2)
+    track(db, arr_id=3)
+    run(db, [cf(copy("s1")), cf(copy("s1"), arr_id=2), cf(copy("s1"), arr_id=3, kind="series",
+                                                           relevant=[7, 8])])
+    for arr_id, lifecycle in ((1, "active"), (2, "removed"), (3, "lost")):
+        f = finding(db, arr_id=arr_id)
+        f.review_state, f.lifecycle = "actioned", lifecycle
+        db.commit()
+    keys, relevant = keep_keys(db)
+    assert keys == {("radarr", 1, "wanted_elsewhere"), ("radarr", 3, "wanted_elsewhere")}
+    assert relevant[("radarr", 3, "wanted_elsewhere")] == [7, 8]

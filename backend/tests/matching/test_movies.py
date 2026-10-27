@@ -119,3 +119,40 @@ def test_ignore_tag_skipped():
     out = run(items, [idx(tmdb=10)], ignore=7)
     assert [f.arr_id for f in out] == [2]
     assert len(run(items, [idx(tmdb=10)], ignore=None)) == 2
+
+
+# --- actioned findings kept ----------------------------------------------------
+
+
+def test_keep_wanted_unmonitored():
+    items = [tracked(monitored=False, cutoff=Res.R1080)]
+    rows = [idx(tmdb=10, res=Res.R720)]
+    assert run(items, rows) == []
+    [f] = match_movies(items, MovieIndex.build(rows), ONLINE, None,
+                       keep={("radarr", 1, "wanted_elsewhere")})
+    assert f.type == "wanted_elsewhere" and f.copies[0].quality == "worse"
+
+
+def test_keep_wanted_with_file_not_emitted_as_wanted():
+    items = [tracked(monitored=False, has_file=True, resolution=Res.R1080)]
+    out = match_movies(items, MovieIndex.build([idx(tmdb=10)]), ONLINE, None,
+                       keep={("radarr", 1, "wanted_elsewhere")})
+    assert [f.type for f in out] == ["on_disk"]
+
+
+def test_keep_on_disk_without_file_vs_cutoff():
+    items = [tracked(monitored=True, has_file=False, cutoff=Res.R2160)]
+    rows = [idx(tmdb=10, res=Res.R1080)]
+    out = match_movies(items, MovieIndex.build(rows), ONLINE, None,
+                       keep={("radarr", 1, "on_disk")})
+    f = {f.type: f for f in out}
+    assert set(f) == {"wanted_elsewhere", "on_disk"}
+    assert f["on_disk"].copies[0].quality == "worse"
+    assert f["on_disk"].copies[0].edition_cmp == "unknown"
+
+
+def test_keep_does_not_override_ignore_tag():
+    items = [tracked(monitored=False, tags=[7])]
+    out = match_movies(items, MovieIndex.build([idx(tmdb=10)]), ONLINE, 7,
+                       keep={("radarr", 1, "wanted_elsewhere")})
+    assert out == []

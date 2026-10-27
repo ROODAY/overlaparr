@@ -207,3 +207,34 @@ def test_naive_now_rejected():
 
     with pytest.raises(ValueError):
         match_episodes(series(), [ep(1)], {"s1": [sep(number=1)]}, ONLINE, None, datetime(2026, 1, 1))
+
+
+# --- actioned findings kept ----------------------------------------------------
+
+
+def test_keep_relevant_replaces_rule_for_kept_type():
+    episodes = [
+        ep(1, tvdb_id=11, monitored=False),  # unmonitored by us, still missing
+        ep(2, tvdb_id=12, has_file=True, res=Res.R720),  # now has a file
+        ep(3, tvdb_id=13, monitored=False),  # never relevant
+    ]
+    server = {"s1": [sep(1, 1, 11, res=Res.R720), sep(1, 2, 12, res=Res.R2160),
+                     sep(1, 3, 13)]}
+    assert "wanted_elsewhere" not in by_type(run(episodes, server))
+    out = match_episodes(series(), episodes, server, ONLINE, Res.R1080, NOW,
+                         keep_relevant={("sonarr", 5, "wanted_elsewhere"): [1, 2, 99]})
+    f = by_type(out)["wanted_elsewhere"]
+    assert f.relevant_episode_ids == [1, 2]  # 99 no longer exists
+    q = {c.episode_arr_id: c.quality for c in f.copies}
+    assert q == {1: "worse", 2: "better"}  # no file: vs cutoff; file: vs own resolution
+    # other type unaffected by the keep
+    assert by_type(out)["on_disk"].relevant_episode_ids == [2]
+
+
+def test_keep_relevant_on_disk_after_file_deleted():
+    episodes = [ep(1, tvdb_id=11, monitored=False)]
+    server = {"s1": [sep(1, 1, 11, res=Res.R2160)]}
+    out = match_episodes(series(), episodes, server, ONLINE, Res.R1080, NOW,
+                         keep_relevant={("sonarr", 5, "on_disk"): [1]})
+    f = by_type(out)["on_disk"]
+    assert f.relevant_episode_ids == [1] and f.copies[0].quality == "better"

@@ -106,6 +106,13 @@ def _match_server(
     return matches
 
 
+def is_wanted_episode(e: Any, now: datetime) -> bool:
+    """Monitored, missing and already aired."""
+    return bool(
+        e.monitored and not e.has_file and e.air_date_utc is not None and e.air_date_utc <= now
+    )
+
+
 def match_episodes(
     series: Any,
     episodes: list[Any],
@@ -113,14 +120,14 @@ def match_episodes(
     server_status: dict[str, str],
     cutoff: Res | None,
     now: datetime,
+    keep_relevant: dict[tuple[str, int, str], list[int]] | None = None,
 ) -> list[ComputedFinding]:
+    """``keep_relevant``: (instance_id, arr_id, type) of actioned findings -> their previous
+    relevant episode ids; for such a type the relevant set is those ids that still exist."""
     if now.tzinfo is None:
         raise ValueError("naive datetime; use timezone-aware UTC")
 
-    wanted = [
-        e for e in episodes
-        if e.monitored and not e.has_file and e.air_date_utc is not None and e.air_date_utc <= now
-    ]
+    wanted = [e for e in episodes if is_wanted_episode(e, now)]
     on_disk = [e for e in episodes if e.has_file]
 
     # Match all tracked episodes so ID-claimed server episodes are consumed even when the
@@ -128,11 +135,18 @@ def match_episodes(
     per_server = {sid: _match_server(episodes, rows) for sid, rows in server_eps.items()}
 
     groups: list[tuple[FindingType, list[Any]]] = [("wanted_elsewhere", wanted), ("on_disk", on_disk)]
+    by_id = {e.episode_arr_id: e for e in episodes}
     findings: list[ComputedFinding] = []
     for ftype, relevant in groups:
+        kept = (keep_relevant or {}).get((series.instance_id, series.arr_id, ftype))
+        if kept is not None:
+            relevant = [by_id[i] for i in dict.fromkeys(kept) if i in by_id]
         copies: list[ComputedCopy] = []
         for e in sorted(relevant, key=lambda e: e.episode_arr_id):
-            baseline = cutoff if ftype == "wanted_elsewhere" else _res(e.resolution)
+            if kept is not None:
+                baseline = _res(e.resolution) if e.has_file else cutoff
+            else:
+                baseline = cutoff if ftype == "wanted_elsewhere" else _res(e.resolution)
             for sid, matches in per_server.items():
                 hit = matches.get(e.episode_arr_id)
                 if hit is None:

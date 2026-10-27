@@ -167,7 +167,7 @@ class Finding(Base):
     kind: Mapped[str]
     type: Mapped[str]  # wanted_elsewhere | on_disk
     review_state: Mapped[str] = mapped_column(default="new")  # new|reviewed|ignored|actioned
-    lifecycle: Mapped[str] = mapped_column(default="active")  # active | lost | removed
+    lifecycle: Mapped[str] = mapped_column(default="active")  # active | lost | removed | resolved
     automation_hold: Mapped[bool] = mapped_column(default=False)
     relevant_count: Mapped[int] = mapped_column(default=0)
     covered_count: Mapped[int] = mapped_column(default=0)

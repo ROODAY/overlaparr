@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -14,8 +15,12 @@ from overlaparr.db.models import (
     FindingServerIgnore,
     TrackedEpisode,
     TrackedItem,
+    utcnow,
 )
 from overlaparr.domain.types import ComputedFinding
+from overlaparr.matching.tv import is_wanted_episode
+
+Key = tuple[str, int, str]
 
 _LIVE = {"online", "degraded"}
 _QUALITY_ORDER = ("better", "same", "worse", "unknown")
@@ -27,6 +32,7 @@ class ReconcileResult:
     lost_ids: list[int] = field(default_factory=list)
     removed_ids: list[int] = field(default_factory=list)
     updated_ids: list[int] = field(default_factory=list)
+    resolved_ids: list[int] = field(default_factory=list)
 
 
 def _summarize(f: Finding, copies: list[FindingCopy], ignored_servers: set[str]) -> None:
@@ -56,6 +62,43 @@ def _purge_instances(db: Session, configured: set[str]) -> None:
     db.execute(delete(TrackedEpisode).where(TrackedEpisode.instance_id.not_in(keep)))
 
 
+def keep_keys(db: Session) -> tuple[set[Key], dict[Key, list[int]]]:
+    """Keys of actioned active/lost findings (and their relevant episode ids) for matching."""
+    rows = db.scalars(
+        select(Finding).where(
+            Finding.review_state == "actioned", Finding.lifecycle.in_(("active", "lost"))
+        )
+    )
+    relevant = {(f.instance_id, f.arr_id, f.type): list(f.relevant_episode_ids) for f in rows}
+    return set(relevant), relevant
+
+
+def _precondition_gone(db: Session, f: Finding, item: TrackedItem, now: datetime) -> bool:
+    """True when the finding no longer applies for arr-side reasons (not a lost copy).
+
+    Actioned findings are kept by the matchers regardless of monitoring, so for them only
+    a downloaded file (movie wanted) or vanished relevant episodes (series) resolve them.
+    """
+    actioned = f.review_state == "actioned"
+    if f.kind == "movie":
+        if f.type == "wanted_elsewhere":
+            return bool(item.has_file) or (not actioned and not item.monitored)
+        return not actioned and not item.has_file
+    episodes = list(
+        db.scalars(
+            select(TrackedEpisode).where(
+                TrackedEpisode.instance_id == f.instance_id,
+                TrackedEpisode.series_arr_id == f.arr_id,
+            )
+        )
+    )
+    if actioned:
+        return not set(f.relevant_episode_ids) & {e.episode_arr_id for e in episodes}
+    if f.type == "wanted_elsewhere":
+        return not any(is_wanted_episode(e, now) for e in episodes)
+    return not any(e.has_file for e in episodes)
+
+
 def reconcile(
     db: Session,
     computed: list[ComputedFinding],
@@ -64,12 +107,13 @@ def reconcile(
     instance_ok: dict[str, bool],
     configured_instances: set[str],
     ignored_items: set[tuple[str, int]],
+    now: datetime | None = None,
 ) -> ReconcileResult:
     """Apply one scan's computed findings to the DB in a single transaction."""
     try:
         result = _reconcile(
             db, computed, scan_id, server_status, instance_ok, configured_instances,
-            ignored_items,
+            ignored_items, now or utcnow(),
         )
         db.commit()
         return result
@@ -86,6 +130,7 @@ def _reconcile(
     instance_ok: dict[str, bool],
     configured_instances: set[str],
     ignored_items: set[tuple[str, int]],
+    now: datetime,
 ) -> ReconcileResult:
     result = ReconcileResult()
     _purge_instances(db, configured_instances)
@@ -111,12 +156,8 @@ def _reconcile(
         ):
             server_ignores[ig.finding_id].add(ig.server_id)
     tracked = {
-        (inst, arr_id)
-        for inst, arr_id in db.execute(
-            select(TrackedItem.instance_id, TrackedItem.arr_id).where(
-                TrackedItem.instance_id.in_(ok_instances)
-            )
-        )
+        (t.instance_id, t.arr_id): t
+        for t in db.scalars(select(TrackedItem).where(TrackedItem.instance_id.in_(ok_instances)))
     }
 
     seen: set[tuple[str, int, str]] = set()
@@ -169,24 +210,28 @@ def _reconcile(
     for key, f in existing.items():
         if key in seen:
             continue
-        if (f.instance_id, f.arr_id) not in tracked:
+        item = tracked.get((f.instance_id, f.arr_id))
+        if item is None:
             if f.lifecycle != "removed":
                 f.lifecycle = "removed"
                 result.removed_ids.append(f.id)
+        elif (f.instance_id, f.arr_id) in ignored_items:
+            # Matching skips ignore-tagged items: no loss/resolved decision, keep everything.
+            f.review_state = "ignored"
         elif f.lifecycle == "active":
+            if _precondition_gone(db, f, item, now):
+                f.lifecycle = "resolved"
+                result.resolved_ids.append(f.id)
+                continue
             prior = old_copies.get(f.id, [])
+            # Copies and summary columns are kept as the last-known state.
+            for c in prior:
+                c.stale = True
             if all(reachable(c.server_id) for c in prior):
                 f.lifecycle = "lost"
-                for c in prior:
-                    db.delete(c)
-                _summarize(f, [], server_ignores.get(f.id, set()))
                 result.lost_ids.append(f.id)
             else:
-                for c in prior:
-                    c.stale = True
                 result.updated_ids.append(f.id)
-        if (f.instance_id, f.arr_id) in ignored_items:
-            f.review_state = "ignored"
 
     db.flush()
     result.new_ids = [f.id for f in new_findings]
