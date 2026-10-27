@@ -33,7 +33,7 @@ SECRET_TAG = "!secret"
 GENERATED_SECRETS = ("session_secret", "app_api_key")
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_NOTIFY_SECRET_FIELDS = {"password", "webhook_url", "url", "urls"}
+NOTIFY_SECRET_FIELDS = ("password", "webhook_url", "url", "urls")
 _ID_LISTS = (("rules",), ("instances",), ("notifications", "connections"))
 _HEADER = (
     "Overlaparr configuration.\n"
@@ -65,6 +65,10 @@ def instance_secret_key(instance_id: str) -> str:
     return f"instance_{instance_id}_api_key"
 
 
+def notify_secret_key(conn_id: str, field: str) -> str:
+    return f"notify_{conn_id}_{field}"
+
+
 def _secret_key(path: tuple) -> str | None:
     """Secret key for a field path (list items are addressed by their id)."""
     if path == ("plex", "token"):
@@ -74,9 +78,9 @@ def _secret_key(path: tuple) -> str | None:
     if (
         len(path) == 4
         and path[:2] == ("notifications", "connections")
-        and path[3] in _NOTIFY_SECRET_FIELDS
+        and path[3] in NOTIFY_SECRET_FIELDS
     ):
-        return f"notify_{path[2]}_{path[3]}"
+        return notify_secret_key(path[2], path[3])
     return None
 
 
