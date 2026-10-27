@@ -39,8 +39,11 @@ class PreviewIn(BaseModel):
     rule: dict[str, Any]
 
 
+READ_ONLY = {"id", "last_run", "last_affected"}  # server-owned; GET output can be sent back
+
+
 def _build(rule_id: str, data: dict[str, Any]) -> Rule:
-    data = {k: v for k, v in data.items() if k != "id"}  # the server owns ids
+    data = {k: v for k, v in data.items() if k not in READ_ONLY}
     try:
         return Rule(id=rule_id, **data)
     except ValidationError as e:
@@ -64,21 +67,31 @@ def _out(cfg: AppConfig, rule_id: str) -> dict:
     return cfg.rules[_index(cfg, rule_id)].model_dump()
 
 
-def _last_run(db: Session, rule_id: str) -> tuple[Any, int]:
-    newest = db.scalars(select(ActionLog).where(ActionLog.rule_id == rule_id)
-                        .order_by(ActionLog.ts.desc(), ActionLog.id.desc()).limit(1)).first()
-    if newest is None:
-        return None, 0
-    affected = db.scalar(select(func.count()).select_from(ActionLog).where(
-        ActionLog.rule_id == rule_id, ActionLog.scan_run_id == newest.scan_run_id))
-    return newest.ts, affected or 0
+def _last_runs(db: Session, rule_ids: list[str]) -> dict[str, tuple[Any, int]]:
+    """rule id -> (ts of its newest ActionLog row, rows in that row's scan run)."""
+    if not rule_ids:
+        return {}
+    rank = func.row_number().over(partition_by=ActionLog.rule_id,
+                                  order_by=(ActionLog.ts.desc(), ActionLog.id.desc()))
+    ranked = select(ActionLog.rule_id, ActionLog.ts, ActionLog.scan_run_id,
+                    rank.label("n")).where(ActionLog.rule_id.in_(rule_ids)).subquery()
+    newest = {rid: (ts, run) for rid, ts, run in db.execute(
+        select(ranked.c.rule_id, ranked.c.ts, ranked.c.scan_run_id).where(ranked.c.n == 1))}
+    # GROUP BY puts NULL scan runs together, as "scan_run_id IS NULL" would.
+    counts = {(rid, run): n for rid, run, n in db.execute(
+        select(ActionLog.rule_id, ActionLog.scan_run_id, func.count())
+        .where(ActionLog.rule_id.in_(list(newest)))
+        .group_by(ActionLog.rule_id, ActionLog.scan_run_id))}
+    return {rid: (ts, counts.get((rid, run), 0)) for rid, (ts, run) in newest.items()}
 
 
 @router.get("")
 def list_rules(db: Session = Depends(get_db), store: ConfigStore = Depends(get_store)):
+    rules = store.current.rules
+    last = _last_runs(db, [r.id for r in rules])
     out = []
-    for rule in store.current.rules:
-        last_run, last_affected = _last_run(db, rule.id)
+    for rule in rules:
+        last_run, last_affected = last.get(rule.id, (None, 0))
         out.append({**rule.model_dump(), "last_run": last_run, "last_affected": last_affected})
     return out
 
@@ -133,6 +146,21 @@ def update_rule(rule_id: str, body: dict[str, Any] = Body(...),
 
     def mutate(c: AppConfig) -> None:
         c.rules[_index(c, rule_id)] = rule
+
+    return _out(update_config(store, mutate), rule_id)
+
+
+@router.patch("/{rule_id}")
+def patch_rule(rule_id: str, body: dict[str, Any] = Body(...),
+               store: ConfigStore = Depends(get_store)):
+    def mutate(c: AppConfig) -> None:
+        idx = _index(c, rule_id)
+        existing = c.rules[idx].model_dump()
+        changes = {k: v for k, v in body.items() if k not in READ_ONLY}
+        if ("action" in changes and changes["action"] != existing["action"]
+                and "delete_confirmed" not in changes):
+            changes["delete_confirmed"] = False  # confirmation was for the old action
+        c.rules[idx] = _build(rule_id, {**existing, **changes})
 
     return _out(update_config(store, mutate), rule_id)
 

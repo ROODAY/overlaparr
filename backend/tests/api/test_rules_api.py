@@ -49,6 +49,47 @@ def test_update_delete_and_404s(authed):
     assert authed.get(RULES).json() == []
 
 
+def test_get_put_round_trip(authed):
+    _rule(authed, action="tag", min_servers=2)
+    listed = authed.get(RULES).json()[0]
+    r = authed.put(f"{RULES}/{listed['id']}", json={**listed, "enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {**{k: v for k, v in listed.items()
+                           if k not in ("last_run", "last_affected")}, "enabled": True}
+
+
+def test_patch_merges(authed):
+    rule = _rule(authed, action="tag", min_servers=2, wait_scans=3, servers=["A"])
+    r = authed.patch(f"{RULES}/{rule['id']}", json={"enabled": True, "last_run": None})
+    assert r.status_code == 200, r.text
+    assert r.json() == {**rule, "enabled": True}
+    assert authed.get(RULES).json()[0]["enabled"] is True
+
+    assert authed.patch(f"{RULES}/nope", json={"enabled": True}).status_code == 404
+    assert authed.patch(f"{RULES}/{rule['id']}", json={"min_servers": 0}).status_code == 422
+
+
+def test_patch_action_change_resets_confirmation(authed):
+    msg = {"detail": "Delete rules require confirmation"}
+    rule = _rule(authed, action="delete", delete_confirmed=True)
+    assert rule["delete_confirmed"] is True
+
+    # Switching action away and back drops the confirmation.
+    r = authed.patch(f"{RULES}/{rule['id']}", json={"action": "tag"})
+    assert r.json()["delete_confirmed"] is False
+    r = authed.patch(f"{RULES}/{rule['id']}", json={"action": "delete", "enabled": True})
+    assert r.status_code == 422
+    assert r.json() == msg
+
+    r = authed.patch(f"{RULES}/{rule['id']}", json={"action": "delete", "enabled": True,
+                                                    "delete_confirmed": True})
+    assert r.status_code == 200, r.text
+    # Not changing the action keeps the confirmation.
+    r = authed.patch(f"{RULES}/{rule['id']}", json={"action": "delete", "name": "x"})
+    assert r.json()["delete_confirmed"] is True
+    assert r.json()["enabled"] is True
+
+
 def test_delete_rule_requires_confirmation(authed):
     msg = {"detail": "Delete rules require confirmation"}
     r = authed.post(RULES, json={"name": "D", "action": "delete", "enabled": True})
@@ -151,6 +192,8 @@ def test_preview_counts(authed, tmp_path):
 
 def test_last_run_and_last_affected(authed):
     rule = _rule(authed)
+    manual = _rule(authed, name="manual")
+    _rule(authed, name="never")
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     with authed.app.state.db_factory() as db:
         def log(ts, scan_run_id, rule_id=rule["id"]):
@@ -163,10 +206,16 @@ def test_last_run_and_last_affected(authed):
         log(t0 + timedelta(days=1), 2)
         log(t0 + timedelta(days=1, seconds=5), 2)
         log(t0 + timedelta(days=9), 3, rule_id="other")
+        log(t0, 2, rule_id=manual["id"])
+        log(t0 + timedelta(days=2), None, rule_id=manual["id"])
+        log(t0 + timedelta(days=2), None, rule_id=manual["id"])
         db.commit()
-    listed = authed.get(RULES).json()[0]
+    listed, by_manual, never = authed.get(RULES).json()
     assert datetime.fromisoformat(listed["last_run"]) == t0 + timedelta(days=1, seconds=5)
     assert listed["last_affected"] == 3
+    assert datetime.fromisoformat(by_manual["last_run"]) == t0 + timedelta(days=2)
+    assert by_manual["last_affected"] == 2  # rows with no scan run count together
+    assert (never["last_run"], never["last_affected"]) == (None, 0)
 
 
 def test_warning_copy(authed):
@@ -186,3 +235,4 @@ def test_rules_require_auth(client):
                                             "password": "hunter2hunter2"})
     client.cookies.clear()
     assert client.get(RULES).status_code == 401
+    assert client.patch(f"{RULES}/x", json={"enabled": True}).status_code == 401
