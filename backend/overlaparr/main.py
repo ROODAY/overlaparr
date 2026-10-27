@@ -16,7 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from overlaparr import paths
 from overlaparr.actions.tags import sync_tags
-from overlaparr.api import instances, plex, servers, settings, setup
+from overlaparr.api import activity, dashboard, instances, plex, scan, servers, settings, setup
 from overlaparr.api.deps import require_auth
 from overlaparr.arr.client import ArrClient
 from overlaparr.arr.snapshot import make_client
@@ -202,7 +202,7 @@ def create_app(
     api.include_router(setup.setup_router)
     api.include_router(setup.auth_router)
     protected = [Depends(require_auth)]
-    for module in (plex, servers, instances, settings):
+    for module in (plex, servers, instances, settings, scan, activity, dashboard):
         api.include_router(module.router, dependencies=protected)
     app.include_router(api)
 
