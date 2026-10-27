@@ -4,12 +4,13 @@ Functions take explicit inputs; ``make_require_auth`` builds the FastAPI
 dependency that the app factory wires up.
 """
 
+import hashlib
 import hmac
 import ipaddress
 from collections.abc import Callable
 
 import bcrypt
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from itsdangerous import BadSignature, TimestampSigner
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,6 +19,8 @@ SESSION_COOKIE = "overlaparr_session"
 SESSION_MAX_AGE = 30 * 24 * 3600
 API_KEY_HEADER = "X-Api-Key"
 MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_BYTES = 72  # bcrypt ignores everything past 72 bytes
+SESSION_SALT = "overlaparr.session"
 
 # Explicit list: ``ip.is_private`` also covers documentation ranges (TEST-NET,
 # 203.0.113.0/24 etc.), which must not count as local.
@@ -45,38 +48,74 @@ def require_setup_open(db: Session) -> None:
         raise HTTPException(status_code=403, detail="Setup already completed")
 
 
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+
+
+# Checked against when the user is unknown so timing doesn't reveal usernames.
+_DUMMY_HASH = _hash_password("overlaparr-dummy-password")
+
+
 def create_user(db: Session, username: str, password: str) -> None:
     username = (username or "").strip()
     if not username:
         raise ValueError("username must not be empty")
     if len(password or "") < MIN_PASSWORD_LENGTH:
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"password must be at most {MAX_PASSWORD_BYTES} bytes (UTF-8)")
     if not needs_setup(db):
         raise ValueError("a user already exists")
-    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
-    db.add(_user_model()(username=username, password_hash=hashed))
+    db.add(_user_model()(username=username, password_hash=_hash_password(password)))
     db.commit()
 
 
 def verify(db: Session, username: str, password: str) -> bool:
-    user = db.scalars(select(_user_model()).where(_user_model().username == username)).first()
-    if user is None:
+    if not isinstance(password, str):
         return False
+    user = db.scalars(select(_user_model()).where(_user_model().username == username)).first()
+    hashed = user.password_hash if user is not None else _DUMMY_HASH
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), user.password_hash.encode("ascii"))
+        ok = bcrypt.checkpw(password.encode("utf-8"), hashed.encode("ascii"))
     except ValueError:
         return False
+    return ok and user is not None
 
 
-def issue_session(secret: str, username: str) -> str:
-    return TimestampSigner(secret).sign(username).decode("utf-8")
+def _hash_tag(password_hash: str) -> str:
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
 
 
-def read_session(secret: str, token: str, max_age: int = SESSION_MAX_AGE) -> str | None:
-    try:
-        return TimestampSigner(secret).unsign(token, max_age=max_age).decode("utf-8")
-    except (BadSignature, UnicodeDecodeError):
+def issue_session(secret: str, username: str, password_hash: str) -> str:
+    """Signed token binding the session to the user's current password hash."""
+    if not secret:
+        raise ValueError("session secret must not be empty")
+    payload = f"{username}:{_hash_tag(password_hash)}"
+    return TimestampSigner(secret, salt=SESSION_SALT).sign(payload).decode("utf-8")
+
+
+def read_session(
+    secret: str, token: str, max_age: int = SESSION_MAX_AGE
+) -> tuple[str, str] | None:
+    """Return ``(username, password_hash_tag)`` for a valid token, else None."""
+    if not secret:
         return None
+    try:
+        payload = TimestampSigner(secret, salt=SESSION_SALT).unsign(token, max_age=max_age)
+        username, tag = payload.decode("utf-8").rsplit(":", 1)
+    except (BadSignature, UnicodeDecodeError, ValueError):
+        return None
+    return username, tag
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE, path="/", httponly=True, samesite="lax"
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax")
 
 
 def is_local(request: Request) -> bool:
@@ -110,12 +149,15 @@ def make_require_auth(store, db_factory) -> Callable[[Request], str]:
             secret = store.get_secret("session_secret")
             token = request.cookies.get(SESSION_COOKIE)
             if secret and token:
-                username = read_session(secret, token)
-                if username is not None:
-                    exists = db.scalars(
+                parsed = read_session(secret, token)
+                if parsed is not None:
+                    username, tag = parsed
+                    user = db.scalars(
                         select(_user_model()).where(_user_model().username == username)
                     ).first()
-                    if exists is not None:
+                    if user is not None and hmac.compare_digest(
+                        tag, _hash_tag(user.password_hash)
+                    ):
                         return username
             if store.current.auth.local_bypass and is_local(request):
                 return "local"
