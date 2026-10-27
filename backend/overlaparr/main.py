@@ -23,6 +23,7 @@ from overlaparr.api import (
     findings,
     instances,
     plex,
+    rules,
     scan,
     servers,
     settings,
@@ -214,7 +215,7 @@ def create_app(
     api.include_router(setup.auth_router)
     protected = [Depends(require_auth)]
     for module in (plex, servers, instances, settings, scan, findings, actions, activity,
-                   dashboard):
+                   dashboard, rules):
         api.include_router(module.router, dependencies=protected)
     app.include_router(api)
 
