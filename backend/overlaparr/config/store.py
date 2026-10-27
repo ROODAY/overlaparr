@@ -351,8 +351,15 @@ class ConfigStore:
             return None if value is None else _resolve_env(_plain(value))
 
     def set_secret(self, key: str, value: str) -> None:
+        self._change_secrets(lambda secrets: secrets.__setitem__(key, value))
+
+    def delete_secret(self, key: str) -> None:
+        """Remove a secret; call once config.yaml no longer references it."""
+        self._change_secrets(lambda secrets: secrets.pop(key, None))
+
+    def _change_secrets(self, change: Callable[[CommentedMap], Any]) -> None:
         with self._lock:
-            self._secrets[key] = value
+            change(self._secrets)
             self._write_secrets()
             # config.yaml may reference this key: re-resolve so current isn't stale.
             try:

@@ -1,0 +1,110 @@
+from sqlalchemy import func, select
+
+from overlaparr.db.models import Finding, FindingCopy, RuleState, ScanRun, Server
+from overlaparr.plex.gateway import PlexUnreachable
+from tests.api.conftest import wait_idle
+
+
+def _connect(c):
+    assert c.put("/api/v1/plex/token", json={"token": "plex-token-123"}).status_code == 200
+
+
+def _seed_findings(app):
+    with app.state.db_factory() as db:
+        f = Finding(instance_id="r1", arr_id=1, kind="movie", type="on_disk", coverage="full",
+                    best_quality="better", edition_summary="same", first_seen_scan_id=1,
+                    last_seen_scan_id=1)
+        db.add(f)
+        db.flush()
+        db.add(FindingCopy(finding_id=f.id, server_id="id-friend", quality="better",
+                           edition_cmp="same", matched_by="id"))
+        db.add(RuleState(rule_id="x", finding_id=f.id, coverage_hash="h",
+                         last_counted_scan_id=1))
+        db.commit()
+
+
+def _count(app, model):
+    with app.state.db_factory() as db:
+        return db.scalar(select(func.count()).select_from(model))
+
+
+def test_refresh_requires_plex(authed):
+    assert authed.post("/api/v1/servers/refresh").status_code == 409
+
+
+def test_refresh_and_list(authed):
+    _connect(authed)
+    r = authed.post("/api/v1/servers/refresh")
+    assert r.status_code == 200
+    rows = authed.get("/api/v1/servers").json()
+    assert {s["machine_id"] for s in rows} == {"id-home", "id-friend", "id-other"}
+    friend = next(s for s in rows if s["machine_id"] == "id-friend")
+    assert friend["label"] == "friend"
+    assert friend["is_new"] is True
+    assert friend["status"] == "offline"
+    assert friend["is_home"] is False
+    assert {"movie_count", "show_count", "unmatchable_count", "last_indexed_at"} <= set(friend)
+
+
+def test_refresh_plex_unreachable(authed, gateway, monkeypatch):
+    _connect(authed)
+
+    def boom():
+        raise PlexUnreachable("cannot list Plex servers from plex.tv")
+
+    monkeypatch.setattr(gateway, "list_servers", boom)
+    r = authed.post("/api/v1/servers/refresh")
+    assert r.status_code == 502
+
+
+def test_change_home_server_rebuilds(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    assert authed.put("/api/v1/servers/home", json={"machine_id": "nope"}).status_code == 404
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+    assert r.status_code == 200
+    wait_idle(app)
+    _seed_findings(app)
+    runs_before = _count(app, ScanRun)
+
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
+    assert r.status_code == 200
+    assert r.json()["home_server"] == "id-friend"
+    assert app.state.store.current.plex.home_server == "id-friend"
+    assert _count(app, Finding) == 0
+    assert _count(app, FindingCopy) == 0
+    assert _count(app, RuleState) == 0
+    wait_idle(app)
+    assert _count(app, ScanRun) == runs_before + 1
+    with app.state.db_factory() as db:
+        assert db.scalar(select(ScanRun.trigger).order_by(ScanRun.id.desc())) == "manual"
+    rows = {s["machine_id"]: s for s in authed.get("/api/v1/servers").json()}
+    assert rows["id-friend"]["is_home"] is True
+    assert rows["id-home"]["is_home"] is False
+    assert authed.get("/api/v1/setup/status").json()["home_server_set"] is True
+
+
+def test_server_toggle_written_to_yaml(authed, tmp_path):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    assert authed.patch("/api/v1/servers/id-zzz", json={"enabled": False}).status_code == 404
+
+    r = authed.patch("/api/v1/servers/id-friend", json={"enabled": False, "label": "Bob"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "disabled" and body["label"] == "Bob" and body["is_new"] is False
+    text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "id-friend" in text and "Bob" in text
+    ov = app.state.store.current.servers
+    assert [(o.id, o.label, o.enabled) for o in ov] == [("id-friend", "Bob", False)]
+    with app.state.db_factory() as db:
+        assert db.get(Server, "id-friend").is_new is False
+
+    # Partial patch keeps the other field.
+    authed.patch("/api/v1/servers/id-friend", json={"enabled": True})
+    ov = app.state.store.current.servers[0]
+    assert (ov.label, ov.enabled) == ("Bob", True)
+    rows = {s["machine_id"]: s for s in authed.get("/api/v1/servers").json()}
+    assert rows["id-friend"]["status"] == "offline"

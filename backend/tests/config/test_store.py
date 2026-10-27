@@ -108,6 +108,17 @@ def test_changed_secret_updates_secrets_file_only(paths):
     assert store.current.plex.token == "xyz"
 
 
+def test_delete_secret(paths):
+    store = make_store(paths, "plex:\n  token: !secret plex_token\n", "plex_token: abc\n")
+    store.update(lambda c: setattr(c.plex, "token", None))
+    store.delete_secret("plex_token")
+    assert store.get_secret("plex_token") is None
+    assert "plex_token" not in paths[1].read_text(encoding="utf-8")
+    assert store.get_secret("session_secret")  # others untouched
+    assert store.error is None
+    store.delete_secret("plex_token")  # absent: no-op
+
+
 def _break_disk(paths):
     paths[0].write_text('scan: {server_timeout_seconds: "x"}\n', encoding="utf-8")
     return paths[0].read_bytes()
