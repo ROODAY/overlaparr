@@ -22,6 +22,9 @@ class SonarrClient(ArrClient):
     def tags(self) -> list[dict]:
         return self.get("/api/v3/tag")
 
+    def get_series(self, series_id: int) -> dict:
+        return self.get(f"/api/v3/series/{series_id}")
+
     def get_episodes(self, ids: list[int]) -> list[dict]:
         if not ids:
             return []
