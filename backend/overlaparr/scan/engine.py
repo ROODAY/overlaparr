@@ -75,6 +75,11 @@ class ScanEngine:
         self._lock = threading.Lock()
         self._hooks: list[PostHook] = []
 
+    @property
+    def running(self) -> bool:
+        """True while a scan is in progress."""
+        return self._lock.locked()
+
     def register_post_hook(self, fn: PostHook) -> None:
         self._hooks.append(fn)
 

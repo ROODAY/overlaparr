@@ -108,3 +108,32 @@ def test_server_toggle_written_to_yaml(authed, tmp_path):
     assert (ov.label, ov.enabled) == ("Bob", True)
     rows = {s["machine_id"]: s for s in authed.get("/api/v1/servers").json()}
     assert rows["id-friend"]["status"] == "offline"
+
+
+def test_change_home_server_refused_while_scanning(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    _seed_findings(app)
+    lock = app.state.scan_engine._lock
+    lock.acquire()
+    try:
+        assert app.state.scan_engine.running is True
+        r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "A scan is running; try again when it finishes"
+        assert app.state.store.current.plex.home_server is None
+        assert _count(app, Finding) == 1
+    finally:
+        lock.release()
+    assert app.state.scan_engine.running is False
+
+
+def test_change_home_server_start_race(authed, monkeypatch):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    monkeypatch.setattr(app.state.scan_engine, "start", lambda trigger: None)
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
+    assert r.status_code == 409
+    assert "scan" in r.json()["detail"].lower()

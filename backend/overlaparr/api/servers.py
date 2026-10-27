@@ -17,6 +17,8 @@ from overlaparr.scan.engine import ScanEngine
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
+SCAN_RUNNING = "A scan is running; try again when it finishes"
+
 
 class HomeIn(BaseModel):
     machine_id: str
@@ -85,6 +87,9 @@ def set_home(body: HomeIn, db: Session = Depends(get_db),
     _known(db, body.machine_id)
     if store.current.plex.home_server == body.machine_id:
         return {"home_server": body.machine_id, "scan_id": None}
+    # A running scan still uses the old home and would recreate stale findings.
+    if engine.running:
+        raise HTTPException(status_code=409, detail=SCAN_RUNNING)
     update_config(store, lambda c: setattr(c.plex, "home_server", body.machine_id))
     for srv in db.scalars(select(Server)):
         srv.is_home = srv.machine_id == body.machine_id
@@ -92,7 +97,14 @@ def set_home(body: HomeIn, db: Session = Depends(get_db),
     # rule states cascade) and rebuild with a fresh scan.
     db.execute(delete(Finding))
     db.commit()
-    return {"home_server": body.machine_id, "scan_id": engine.start("manual")}
+    scan_id = engine.start("manual")
+    if scan_id is None:  # a scan started in between (race)
+        raise HTTPException(
+            status_code=409,
+            detail="Home server changed, but a scan started meanwhile; run a scan when it "
+                   "finishes to rebuild findings",
+        )
+    return {"home_server": body.machine_id, "scan_id": scan_id}
 
 
 @router.patch("/{machine_id}")

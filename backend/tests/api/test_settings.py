@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from overlaparr.logging_setup import register_secret
+from tests.api.conftest import USER
 
 
 def test_get_settings_masked(authed):
@@ -105,3 +106,22 @@ def test_error_bodies_redacted(make_app):
         assert "connection failed" in r.json()["detail"]
         r = c.get("/api/v1/http-test")
         assert r.status_code == 502 and secret not in r.text
+
+
+def test_invalid_config_at_startup_keeps_running(make_app, tmp_path):
+    broken = b'scan: {page_size: "lots"}\n'
+    (tmp_path / "config.yaml").write_bytes(broken)
+    app = make_app()
+    with TestClient(app) as c:
+        assert c.get("/health").json() == {"status": "ok"}
+        assert c.post("/api/v1/setup/user", json=USER).status_code == 200
+        body = c.get("/api/v1/settings").json()
+        assert "page_size" in body["config_error"]
+        assert c.put("/api/v1/settings", json={"tags": {"enabled": True}}).status_code == 409
+        assert (tmp_path / "config.yaml").read_bytes() == broken
+        # A scan on the fallback config fails cleanly.
+        app.state.scan_engine.run_sync("manual")
+        (tmp_path / "config.yaml").write_text("scan:\n  page_size: 42\n", encoding="utf-8")
+        assert app.state.store.reload_from_disk() is True
+        body = c.get("/api/v1/settings").json()
+        assert body["config_error"] is None and body["scan"]["page_size"] == 42

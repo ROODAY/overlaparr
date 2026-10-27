@@ -83,3 +83,26 @@ def test_paste_token_and_sign_out(authed, tmp_path):
     assert token not in (tmp_path / "secrets.yaml").read_text(encoding="utf-8")
     assert authed.get("/api/v1/setup/status").json()["plex_connected"] is False
     assert authed.put("/api/v1/plex/token", json={"token": "  "}).status_code == 422
+
+
+def test_failed_token_save_leaves_no_secret(authed, tmp_path):
+    (tmp_path / "config.yaml").write_text('scan: {page_size: "x"}\n', encoding="utf-8")
+    authed.app.state.store.reload_from_disk()
+    r = authed.put("/api/v1/plex/token", json={"token": "orphan-token-123"})
+    assert r.status_code == 409
+    assert authed.app.state.store.get_secret("plex_token") is None
+    assert "orphan-token-123" not in (tmp_path / "secrets.yaml").read_text(encoding="utf-8")
+
+
+def test_token_save_rolls_back_secret_on_update_failure(authed, tmp_path, monkeypatch):
+    from overlaparr.config.store import ConfigInvalidOnDisk
+
+    store = authed.app.state.store
+
+    def fail(_mutator):
+        raise ConfigInvalidOnDisk("broke between checks")
+
+    monkeypatch.setattr(store, "update", fail)
+    r = authed.put("/api/v1/plex/token", json={"token": "orphan-token-456"})
+    assert r.status_code == 409
+    assert store.get_secret("plex_token") is None

@@ -109,3 +109,31 @@ def test_post_hooks_registered_in_order(make_app):
     app = make_app()
     names = [h.__name__ for h in app.state.scan_engine._hooks]
     assert names == ["sync_tags", "handle_losses", "run_rules", "dispatch_after_scan"]
+
+
+def test_login_strips_username(client):
+    client.post("/api/v1/setup/user", json=USER)
+    client.cookies.clear()
+    r = client.post("/api/v1/auth/login", json={**USER, "username": "  alice "})
+    assert r.status_code == 200
+    assert client.get("/api/v1/auth/me").json() == {"principal": "alice"}
+
+
+OPEN_ROUTES = {"/api/v1/setup/status", "/api/v1/setup/user", "/api/v1/auth/login"}
+
+
+def test_every_api_route_requires_auth(client):
+    import re
+
+    client.post("/api/v1/setup/user", json=USER)
+    client.cookies.clear()
+    checked = 0
+    for path, ops in client.app.openapi()["paths"].items():
+        if not path.startswith("/api/v1") or path in OPEN_ROUTES:
+            continue
+        url = re.sub(r"\{[^}]+\}", "1", path)
+        for method in ops:
+            r = client.request(method.upper(), url)
+            assert r.status_code == 401, (method, path, r.status_code)
+            checked += 1
+    assert checked >= 15

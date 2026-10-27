@@ -93,3 +93,12 @@ def test_profiles_and_tags(authed):
     respx.get("http://radarr:7878/api/v3/tag").mock(return_value=httpx.Response(500))
     r = authed.get(f"/api/v1/instances/{inst['id']}/tags")
     assert r.status_code == 502 and KEY not in r.text
+
+
+def test_delete_instance_removes_secret(authed, tmp_path):
+    inst = _create(authed)
+    key_name = f"instance_{inst['id']}_api_key"
+    assert authed.app.state.store.get_secret(key_name) == KEY
+    authed.delete(f"/api/v1/instances/{inst['id']}")
+    assert authed.app.state.store.get_secret(key_name) is None
+    assert KEY not in (tmp_path / "secrets.yaml").read_text(encoding="utf-8")

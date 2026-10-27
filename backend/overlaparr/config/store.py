@@ -61,12 +61,16 @@ def _yaml() -> YAML:
     return y
 
 
+def instance_secret_key(instance_id: str) -> str:
+    return f"instance_{instance_id}_api_key"
+
+
 def _secret_key(path: tuple) -> str | None:
     """Secret key for a field path (list items are addressed by their id)."""
     if path == ("plex", "token"):
         return "plex_token"
     if len(path) == 3 and path[0] == "instances" and path[2] == "api_key":
-        return f"instance_{path[1]}_api_key"
+        return instance_secret_key(path[1])
     if (
         len(path) == 4
         and path[:2] == ("notifications", "connections")
@@ -280,12 +284,22 @@ class ConfigStore:
         return self._error
 
     def load(self) -> AppConfig:
+        """Read the files; an invalid config.yaml never stops the app.
+
+        Without a previous good config the defaults are used and the problem is
+        kept in ``error``. The broken file is left untouched and not remembered,
+        so the next reload applies the user's fix.
+        """
         with self._lock:
             try:
                 _, cfg = self._read_disk()
             except ConfigInvalidOnDisk as e:
                 self._error = str(e)
-                raise
+                self._known = (None, None)
+                log.error("config on disk is invalid: %s", e)
+                if self._current is None:
+                    self._current = AppConfig()
+                return self._current
             self._error = None
             self._current = cfg
             self._remember_disk()

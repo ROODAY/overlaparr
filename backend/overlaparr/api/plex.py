@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from overlaparr.api.deps import ensure_config_writable, get_db, get_store, update_config
+from overlaparr.api.deps import get_db, get_store, update_config
 from overlaparr.config.store import ConfigStore
 from overlaparr.plex import auth as plex_auth
 
@@ -26,9 +26,9 @@ def _plex_error(e: plex_auth.PlexAuthError) -> HTTPException:
 
 
 def save_token(store: ConfigStore, token: str) -> None:
-    """Store the token in secrets.yaml; config.yaml references it as !secret plex_token."""
-    ensure_config_writable(store)
-    store.set_secret(TOKEN_SECRET, token)
+    """Save the token; the store writes it to secrets.yaml (as plex_token) and
+    references it from config.yaml as ``!secret plex_token``, and only once the
+    new config validated, so a failed save leaves no orphaned secret."""
     update_config(store, lambda c: setattr(c.plex, "token", token))
 
 

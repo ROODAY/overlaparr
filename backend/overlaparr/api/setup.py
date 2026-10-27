@@ -62,9 +62,10 @@ def setup_user(body: Credentials, response: Response, db: Session = Depends(get_
 @auth_router.post("/login")
 def login(body: Credentials, response: Response, db: Session = Depends(get_db),
           store: ConfigStore = Depends(get_store)):
-    if not auth.verify(db, body.username, body.password):
+    username = body.username.strip()
+    if not auth.verify(db, username, body.password):
         raise HTTPException(status_code=401, detail=INVALID_LOGIN)
-    return _log_in(response, store, _user(db, body.username))
+    return _log_in(response, store, _user(db, username))
 
 
 @auth_router.post("/logout", dependencies=[Depends(require_auth)])

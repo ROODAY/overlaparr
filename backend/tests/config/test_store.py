@@ -218,3 +218,23 @@ def test_set_secret_refreshes_current(paths):
     # an unreferenced secret does not trigger a notification
     store.set_secret("unrelated", "x")
     assert len(seen) == 1
+
+
+def test_load_invalid_without_good_config_falls_back(paths):
+    broken = b'scan: {server_timeout_seconds: "x"}\n'
+    paths[0].write_bytes(broken)
+    store = ConfigStore(*paths)
+    cfg = store.load()
+    assert cfg == store.current
+    assert store.current.scan.server_timeout_seconds == 10  # defaults
+    assert "server_timeout_seconds" in store.error
+    assert store.get_secret("session_secret")  # secrets still usable
+    assert paths[0].read_bytes() == broken
+    with pytest.raises(ConfigInvalidOnDisk):
+        store.update(lambda c: setattr(c.scan, "page_size", 10))
+    assert paths[0].read_bytes() == broken
+
+    paths[0].write_text("scan:\n  page_size: 42\n", encoding="utf-8")
+    assert store.reload_from_disk() is True
+    assert store.error is None
+    assert store.current.scan.page_size == 42

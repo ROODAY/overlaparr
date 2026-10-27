@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from overlaparr.api.deps import get_store, update_config, validation_detail
 from overlaparr.arr.client import ArrClient, ArrError
 from overlaparr.config.schema import AppConfig, InstanceConfig, LossHandling, new_id
-from overlaparr.config.store import MASK, ConfigStore, mask_secrets
+from overlaparr.config.store import MASK, ConfigStore, instance_secret_key, mask_secrets
 from overlaparr.logging_setup import redact
 
 router = APIRouter(prefix="/instances", tags=["instances"])
@@ -117,6 +117,7 @@ def delete_instance(instance_id: str, store: ConfigStore = Depends(get_store)):
     # Its findings are purged by reconcile on the next scan.
     update_config(store, lambda c: setattr(
         c, "instances", [i for i in c.instances if i.id != instance_id]))
+    store.delete_secret(instance_secret_key(instance_id))
     return {"ok": True}
 
 
