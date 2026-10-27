@@ -43,9 +43,16 @@ def validation_detail(e: ValidationError) -> list[dict]:
     ]
 
 
+def config_error(store: ConfigStore) -> str | None:
+    """The invalid-config-on-disk message, redacted (YAML/pydantic errors can echo input)."""
+    error = store.error
+    return redact(error) if error else None
+
+
 def ensure_config_writable(store: ConfigStore) -> None:
-    if store.error:
-        raise HTTPException(status_code=409, detail=store.error)
+    error = config_error(store)
+    if error:
+        raise HTTPException(status_code=409, detail=error)
 
 
 def update_config(store: ConfigStore, mutator: Callable[[AppConfig], None]) -> AppConfig:

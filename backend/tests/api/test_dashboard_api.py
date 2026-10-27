@@ -91,3 +91,33 @@ def test_dashboard_empty(authed):
     assert d["last_scan"] is None
     assert d["servers"] == []
     assert d["instances"] == []
+
+
+def test_config_error_redacted_everywhere(authed, monkeypatch):
+    from overlaparr.logging_setup import register_secret
+
+    secret = "registered-secret-987"
+    register_secret(secret)
+    store = authed.app.state.store
+    monkeypatch.setattr(store, "_error", f"bad value {secret}; api_key: leaked-key-555")
+
+    dash = authed.get("/api/v1/dashboard").json()["config_error"]
+    settings = authed.get("/api/v1/settings").json()["config_error"]
+    conflict = authed.put("/api/v1/settings", json={"tags": {"enabled": True}})
+    assert conflict.status_code == 409
+    for text in (dash, settings, conflict.json()["detail"]):
+        assert "bad value" in text
+        assert secret not in text and "leaked-key-555" not in text
+
+
+def test_instance_ok_from_latest_run_with_instances(authed):
+    app = authed.app
+    app.state.store.update(lambda c: c.instances.append(InstanceConfig(
+        id="r1", name="Radarr", type="radarr", url="http://radarr:7878", api_key="k")))
+    with app.state.db_factory() as db:
+        db.add(ScanRun(status="ok", trigger="schedule", summary={"instances": {"r1": False}}))
+        db.add(ScanRun(status="failed", trigger="manual", summary={}))  # failed before instances
+        db.commit()
+    d = authed.get("/api/v1/dashboard").json()
+    assert d["last_scan"]["status"] == "failed"
+    assert d["instances"] == [{"id": "r1", "name": "Radarr", "ok": False}]

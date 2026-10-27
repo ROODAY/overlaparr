@@ -8,21 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from overlaparr.actions.undo import UndoError, undo
+from overlaparr.actions.undo import UndoError, is_undoable, undo
 from overlaparr.api.deps import get_db, get_store
 from overlaparr.arr.snapshot import make_client
 from overlaparr.config.store import ConfigStore
 from overlaparr.db.models import ActionLog
 
 router = APIRouter(prefix="/activity", tags=["activity"])
-
-
-def can_undo(row: ActionLog) -> bool:
-    """Mirrors undo()'s own check: an error row counts only for a partial monitoring change."""
-    if not row.undoable or row.undone_at is not None:
-        return False
-    return row.result == "ok" or (
-        row.result == "error" and bool((row.prior_state or {}).get("monitored")))
 
 
 def log_row(row: ActionLog) -> dict:
@@ -46,7 +38,7 @@ def log_row(row: ActionLog) -> dict:
         "undoable": row.undoable,
         "undone_at": row.undone_at,
         "undo_of_id": row.undo_of_id,
-        "can_undo": can_undo(row),
+        "can_undo": is_undoable(row),
     }
 
 

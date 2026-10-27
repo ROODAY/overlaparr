@@ -22,6 +22,17 @@ class UndoError(Exception):
     """The action cannot be undone (nothing is logged)."""
 
 
+def is_undoable(row: ActionLog) -> bool:
+    """Whether ``undo`` would accept this row (not yet undone, and it changed something).
+
+    An error row qualifies only for a monitoring change applied before the failure.
+    """
+    if not row.undoable or row.undone_at is not None:
+        return False
+    partial = row.result == "error" and bool((row.prior_state or {}).get("monitored"))
+    return row.result == "ok" or partial
+
+
 def _undo_review(db: Session, orig: ActionLog, finding: Finding, row: ActionLog) -> str:
     if orig.action == "ignore_server":
         db.execute(delete(FindingServerIgnore).where(
@@ -73,9 +84,7 @@ def undo(
     orig = db.get(ActionLog, log_id)
     if orig is None:
         raise UndoError(f"Action {log_id} not found")
-    # An error row is undoable only for a monitoring change applied before the failure.
-    partial = orig.result == "error" and bool(orig.prior_state.get("monitored"))
-    if not (orig.undoable and orig.undone_at is None and (orig.result == "ok" or partial)):
+    if not is_undoable(orig):
         raise UndoError("This action cannot be undone")
     finding = db.get(Finding, orig.finding_id) if orig.finding_id is not None else None
     row = ActionLog(

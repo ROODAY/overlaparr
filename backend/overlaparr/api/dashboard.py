@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from overlaparr.api.deps import get_db, get_store
+from overlaparr.api.deps import config_error, get_db, get_store
 from overlaparr.api.scan import run_dict
 from overlaparr.config.schema import AppConfig
 from overlaparr.config.store import ConfigStore
@@ -55,12 +55,25 @@ def _servers(db: Session, cfg: AppConfig) -> list[dict]:
     return sorted(rows, key=lambda r: r["label"].lower())
 
 
+def _instances(db: Session, cfg: AppConfig) -> list[dict]:
+    """Configured instances with their health from the newest scan that read instances.
+
+    A scan that failed early (e.g. Plex unreachable) records no instance results, so
+    the newest run alone would hide the last known health.
+    """
+    ok: dict = {}
+    for summary in db.scalars(select(ScanRun.summary).order_by(ScanRun.id.desc())):
+        if isinstance(summary, dict) and isinstance(summary.get("instances"), dict):
+            ok = summary["instances"]
+            break
+    return [{"id": i.id, "name": i.name, "ok": ok.get(i.id)} for i in cfg.instances]
+
+
 @router.get("")
 def dashboard(request: Request, db: Session = Depends(get_db),
               store: ConfigStore = Depends(get_store)):
     cfg = store.current
     last = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()).limit(1))
-    instance_ok = ((last.summary or {}).get("instances") or {}) if last is not None else {}
     return {
         "counts": {
             "by_type": _counts(db, Finding.type, TYPES),
@@ -73,7 +86,6 @@ def dashboard(request: Request, db: Session = Depends(get_db),
         "last_scan": run_dict(last) if last is not None else None,
         "next_scan": _next_scan(request, cfg),
         "servers": _servers(db, cfg),
-        "instances": [{"id": i.id, "name": i.name, "ok": instance_ok.get(i.id)}
-                      for i in cfg.instances],
-        "config_error": store.error,
+        "instances": _instances(db, cfg),
+        "config_error": config_error(store),
     }

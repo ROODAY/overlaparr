@@ -6,11 +6,10 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
-from overlaparr.api.deps import ensure_config_writable, get_store, update_config
+from overlaparr.api.deps import config_error, ensure_config_writable, get_store, update_config
 from overlaparr.config.schema import AppConfig
 from overlaparr.config.store import ConfigStore, mask_secrets
 from overlaparr.cron import next_runs
-from overlaparr.logging_setup import redact
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -20,8 +19,7 @@ PREVIEW_RUNS = 5
 
 
 def _settings(store: ConfigStore) -> dict:
-    error = store.error
-    return {**mask_secrets(store.current), "config_error": redact(error) if error else None}
+    return {**mask_secrets(store.current), "config_error": config_error(store)}
 
 
 def _check_body(body: dict[str, Any]) -> None:
