@@ -179,7 +179,12 @@ class ScanEngine:
         db.expire_all()  # indexing committed through other sessions
         mark_stale(db, cfg.scan.stale_after_hours, utcnow())
         servers = {s.machine_id: s for s in db.scalars(select(Server)) if s.machine_id != home}
-        server_status = {sid: s.reachability for sid, s in servers.items()}
+        # Disabled servers keep their old reachability in the DB; reporting them as
+        # "disabled" (not live) keeps their copies stale instead of looking lost.
+        disabled = {o.id for o in cfg.servers if not o.enabled}
+        server_status = {
+            sid: "disabled" if sid in disabled else s.reachability for sid, s in servers.items()
+        }
 
         # Instances: read and persist each enabled one.
         enabled = [i for i in cfg.instances if i.enabled]
@@ -199,7 +204,7 @@ class ScanEngine:
         # Matching against every other enabled server's index.
         self._progress(scan_id, "matching")
         keep, keep_relevant = keep_keys(db)
-        excluded = {home} | {o.id for o in cfg.servers if not o.enabled}
+        excluded = {home} | disabled
         rows = list(db.scalars(select(IndexItem)))
         movie_index = MovieIndex.build(rows, excluded)
         show_index = ShowIndex.build(rows, excluded)
@@ -233,7 +238,9 @@ class ScanEngine:
                     show_index, server_status, keep_relevant, started, connect,
                 )
             except ArrError as e:
-                # Missing episode data would look like losses: skip this instance's reconcile.
+                # Missing episode data would look like losses: marking the instance not ok
+                # makes reconcile leave its findings untouched. Episodes already persisted
+                # stay committed; the rollback only discards this failed step's session state.
                 log.warning("instance %s episode read failed: %s", inst.id, e.message)
                 instance_ok[inst.id] = False
                 db.rollback()

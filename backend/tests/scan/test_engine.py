@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from overlaparr.arr.snapshot import make_client
 from overlaparr.config.store import ConfigStore
-from overlaparr.db.models import Finding, IndexItem, ScanRun, TrackedEpisode
+from overlaparr.db.models import Finding, FindingCopy, IndexItem, ScanRun, TrackedEpisode
 from overlaparr.db.session import init_db, make_engine, make_sessionmaker
 from overlaparr.plex.gateway import PlexEpisodeRow, PlexItemRow
 from overlaparr.scan.engine import ScanAlreadyRunning, ScanContext, ScanEngine
@@ -335,3 +335,20 @@ def test_plex_tv_unreachable_fails_scan(env):
     env.gateway = Down()
     run = env.run()
     assert run.status == "failed" and "SECRET123" not in run.error
+
+
+@respx.mock
+def test_disabling_a_server_keeps_its_findings_active(env):
+    mock_radarr([radarr_movie()])
+    env.run()
+    [before] = env.findings()
+    env.configure(servers=[{"id": "id-other", "enabled": False}])
+    run = env.run()
+    assert run.status == "ok"
+    assert run.summary["servers"] == {"id-other": "disabled"}
+    assert run.summary["counts"]["lost"] == 0
+    [after] = env.findings()
+    assert after.id == before.id and after.lifecycle == "active"
+    with env.factory() as db:
+        copies = list(db.scalars(select(FindingCopy).where(FindingCopy.finding_id == after.id)))
+    assert copies and all(c.stale for c in copies)
