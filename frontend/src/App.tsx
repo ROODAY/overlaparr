@@ -23,6 +23,7 @@ import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 import { RuleEditor } from "./pages/RuleEditor";
 import { Servers } from "./pages/Servers";
+import { Settings } from "./pages/Settings";
 import { Setup } from "./pages/Setup";
 
 export default function App() {
@@ -93,7 +94,7 @@ function AppRoutes() {
           <Route path="servers" element={<Servers />} />
           <Route path="instances" element={<Instances />} />
           <Route path="notifications" element={<Placeholder name="Notifications" />} />
-          <Route path="settings" element={<Placeholder name="Settings" />} />
+          <Route path="settings" element={<Settings />} />
           <Route path="logs" element={<Placeholder name="Logs" />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
