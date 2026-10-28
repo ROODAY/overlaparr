@@ -68,6 +68,8 @@ describe("InstanceForm", () => {
         tested = await request.json();
         return HttpResponse.json({ ok: true, version: "4.0" });
       }),
+      // Saving a new instance makes it existing, so the form loads its quality profiles.
+      http.get("*/api/v1/instances/i1/profiles", () => HttpResponse.json([])),
     );
     const { user, onSaved } = renderForm();
     await fill(user);

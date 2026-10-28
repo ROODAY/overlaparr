@@ -6,6 +6,7 @@ export const queryKeys = {
   setupStatus: ["setup-status"],
   me: ["me"],
   dashboard: ["dashboard"],
+  servers: ["servers"],
   instances: ["instances"],
   /** Rules list and warnings; also the prefix for preview queries. */
   rules: ["rules"],

@@ -18,9 +18,11 @@ import { Automation } from "./pages/Automation";
 import { Dashboard } from "./pages/Dashboard";
 import { FindingDetail } from "./pages/FindingDetail";
 import { Findings } from "./pages/Findings";
+import { Instances } from "./pages/Instances";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 import { RuleEditor } from "./pages/RuleEditor";
+import { Servers } from "./pages/Servers";
 import { Setup } from "./pages/Setup";
 
 export default function App() {
@@ -88,8 +90,8 @@ function AppRoutes() {
           <Route path="automation/new" element={<RuleEditor />} />
           <Route path="automation/:id" element={<RuleEditor />} />
           <Route path="activity" element={<Placeholder name="Activity log" />} />
-          <Route path="servers" element={<Placeholder name="Servers" />} />
-          <Route path="instances" element={<Placeholder name="Instances" />} />
+          <Route path="servers" element={<Servers />} />
+          <Route path="instances" element={<Instances />} />
           <Route path="notifications" element={<Placeholder name="Notifications" />} />
           <Route path="settings" element={<Placeholder name="Settings" />} />
           <Route path="logs" element={<Placeholder name="Logs" />} />

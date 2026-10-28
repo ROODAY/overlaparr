@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../../api/client";
 import { queryKeys } from "../../api/queryClient";
@@ -11,6 +11,7 @@ import {
   type InstanceTestResult,
   type InstanceType,
   type LossHandling,
+  type QualityProfile,
 } from "../../api/types";
 
 const INPUT =
@@ -44,7 +45,7 @@ function message(error: unknown): string {
 /** Add or edit a Sonarr/Radarr instance, with a connection test. */
 export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
   const queryClient = useQueryClient();
-  const ids = { name: useId(), type: useId(), url: useId(), key: useId() };
+  const ids = { name: useId(), type: useId(), url: useId(), key: useId(), profile: useId() };
   const [name, setName] = useState(initial?.name ?? "");
   const [type, setType] = useState<InstanceType>(initial?.type ?? "sonarr");
   const [url, setUrl] = useState(initial?.url ?? "");
@@ -53,6 +54,13 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
   const [loss, setLoss] = useState<LossHandling>(initial?.loss_handling ?? DEFAULT_LOSS);
   // Set once saved, so later saves update this instance and a masked key tests with the stored one.
   const [savedId, setSavedId] = useState<string | undefined>(initial?.id);
+
+  // Only an existing instance has quality profiles to choose from.
+  const profiles = useQuery({
+    queryKey: ["instances", savedId, "profiles"],
+    queryFn: () => api.get<QualityProfile[]>(`/instances/${savedId}/profiles`),
+    enabled: savedId !== undefined,
+  });
 
   const test = useMutation({
     mutationFn: (body: InstanceTest) => api.post<InstanceTestResult>("/instances/test", body),
@@ -182,6 +190,36 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
             {opt.label}
           </label>
         ))}
+        {savedId && (
+          <div className="mt-2">
+            <label htmlFor={ids.profile} className="block text-sm text-slate-300">
+              Quality profile
+            </label>
+            <select
+              id={ids.profile}
+              className={INPUT}
+              value={loss.quality_profile_id === null ? "" : String(loss.quality_profile_id)}
+              onChange={(e) =>
+                setLoss({
+                  ...loss,
+                  quality_profile_id: e.target.value === "" ? null : Number(e.target.value),
+                })
+              }
+            >
+              <option value="">Leave unchanged</option>
+              {profiles.data?.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name ?? `Profile ${profile.id}`}
+                </option>
+              ))}
+            </select>
+            {profiles.isError && (
+              <p className="mt-1 text-xs text-red-300">
+                Could not load quality profiles: {message(profiles.error)}
+              </p>
+            )}
+          </div>
+        )}
       </fieldset>
       {testResult}
       {save.isError && <Alert>{message(save.error)}</Alert>}
