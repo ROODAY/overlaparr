@@ -14,13 +14,15 @@ import { createQueryClient, queryKeys } from "./api/queryClient";
 import type { Me, SetupStatus } from "./api/types";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
+import { Activity } from "./pages/Activity";
 import { Automation } from "./pages/Automation";
 import { Dashboard } from "./pages/Dashboard";
 import { FindingDetail } from "./pages/FindingDetail";
 import { Findings } from "./pages/Findings";
 import { Instances } from "./pages/Instances";
 import { Login } from "./pages/Login";
-import { Placeholder } from "./pages/Placeholder";
+import { Logs } from "./pages/Logs";
+import { Notifications } from "./pages/Notifications";
 import { RuleEditor } from "./pages/RuleEditor";
 import { Servers } from "./pages/Servers";
 import { Settings } from "./pages/Settings";
@@ -90,12 +92,12 @@ function AppRoutes() {
           <Route path="automation" element={<Automation />} />
           <Route path="automation/new" element={<RuleEditor />} />
           <Route path="automation/:id" element={<RuleEditor />} />
-          <Route path="activity" element={<Placeholder name="Activity log" />} />
+          <Route path="activity" element={<Activity />} />
           <Route path="servers" element={<Servers />} />
           <Route path="instances" element={<Instances />} />
-          <Route path="notifications" element={<Placeholder name="Notifications" />} />
+          <Route path="notifications" element={<Notifications />} />
           <Route path="settings" element={<Settings />} />
-          <Route path="logs" element={<Placeholder name="Logs" />} />
+          <Route path="logs" element={<Logs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Route>
