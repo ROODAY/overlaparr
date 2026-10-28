@@ -3,6 +3,8 @@ import type {
   Dashboard,
   Finding,
   FindingDetail,
+  Instance,
+  RuleWithRun,
   ScanProgress,
   ScanStatus,
 } from "../api/types";
@@ -227,6 +229,44 @@ export function seriesDetailFixture(overrides: Partial<FindingDetail> = {}): Fin
       },
     ],
     history: [],
+    ...overrides,
+  };
+}
+
+export function ruleFixture(overrides: Partial<RuleWithRun> = {}): RuleWithRun {
+  return {
+    id: "r-1",
+    name: "Unmonitor wanted",
+    enabled: false,
+    action: "unmonitor",
+    delete_mode: "files",
+    add_exclusion: false,
+    delete_confirmed: false,
+    finding_types: ["wanted_elsewhere"],
+    instances: [],
+    servers: [],
+    min_servers: 1,
+    coverage: "full",
+    quality: ["better", "same"],
+    edition: ["same"],
+    match_methods: ["id"],
+    wait_scans: 2,
+    dry_run_next: false,
+    last_run: null,
+    last_affected: 0,
+    ...overrides,
+  };
+}
+
+export function instanceFixture(overrides: Partial<Instance> = {}): Instance {
+  return {
+    id: "i-1",
+    name: "Sonarr",
+    type: "sonarr",
+    url: "http://sonarr:8989",
+    api_key: "********",
+    enabled: true,
+    loss_handling: { remonitor: false, remove_exclusion: false, quality_profile_id: null, search: false },
     ...overrides,
   };
 }

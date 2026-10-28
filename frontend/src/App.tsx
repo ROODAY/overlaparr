@@ -14,11 +14,13 @@ import { createQueryClient, queryKeys } from "./api/queryClient";
 import type { Me, SetupStatus } from "./api/types";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
+import { Automation } from "./pages/Automation";
 import { Dashboard } from "./pages/Dashboard";
 import { FindingDetail } from "./pages/FindingDetail";
 import { Findings } from "./pages/Findings";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
+import { RuleEditor } from "./pages/RuleEditor";
 import { Setup } from "./pages/Setup";
 
 export default function App() {
@@ -82,8 +84,9 @@ function AppRoutes() {
           <Route index element={<Dashboard />} />
           <Route path="findings" element={<Findings />} />
           <Route path="findings/:id" element={<FindingDetail />} />
-          <Route path="automation" element={<Placeholder name="Automation" />} />
-          <Route path="automation/:id" element={<Placeholder name="Automation" />} />
+          <Route path="automation" element={<Automation />} />
+          <Route path="automation/new" element={<RuleEditor />} />
+          <Route path="automation/:id" element={<RuleEditor />} />
           <Route path="activity" element={<Placeholder name="Activity log" />} />
           <Route path="servers" element={<Placeholder name="Servers" />} />
           <Route path="instances" element={<Placeholder name="Instances" />} />

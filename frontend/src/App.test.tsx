@@ -74,9 +74,14 @@ describe("App routing", () => {
   });
 
   it("renders the page for nested routes", async () => {
-    server.use(status(false), authenticated, dashboard());
+    server.use(
+      status(false),
+      authenticated,
+      dashboard(),
+      http.get("*/api/v1/rules", () => HttpResponse.json([])),
+    );
     renderAt("/automation/12");
-    expect(await screen.findByText("Automation — coming soon")).toBeInTheDocument();
+    expect(await screen.findByText(/This rule no longer exists/)).toBeInTheDocument();
   });
 
   it("shows a banner when the config on disk is invalid", async () => {

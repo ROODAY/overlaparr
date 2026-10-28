@@ -7,6 +7,8 @@ export const queryKeys = {
   me: ["me"],
   dashboard: ["dashboard"],
   instances: ["instances"],
+  /** Rules list and warnings; also the prefix for preview queries. */
+  rules: ["rules"],
   scanStatus: ["scan-status"],
   /** Prefix for every findings list query (the full key adds the query string). */
   findings: ["findings"],
