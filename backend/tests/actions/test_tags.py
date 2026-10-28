@@ -194,3 +194,23 @@ def test_batches_items_per_tag(db):
     route = mock()
     sync_tags(ctx_for(db))
     assert bodies(route) == [{"movieIds": [1, 2], "tags": [1], "applyTags": "add"}]
+
+
+@respx.mock
+def test_ignore_tag_never_owned_even_if_it_looks_like_a_server_tag(db):
+    item(db, tags=[10], finding=False)  # "on-alpha" is the user's ignore tag here
+    route = mock()
+    ctx = ctx_for(db, per_server=True)
+    ctx.config.tags.ignore = "on-alpha"
+    sync_tags(ctx)
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_ignore_tag_never_added_as_a_server_tag(db):
+    item(db, tags=[1])  # finding with a copy on Alpha -> would want "on-alpha"
+    route = mock()
+    ctx = ctx_for(db, per_server=True)
+    ctx.config.tags.ignore = "on-alpha"
+    sync_tags(ctx)
+    assert route.call_count == 0 and tag_of(db) == [1]

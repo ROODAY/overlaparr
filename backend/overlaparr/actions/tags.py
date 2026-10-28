@@ -64,6 +64,7 @@ def _sync_instance(ctx: ScanContext, instance_id: str, client: ArrClient,
     tag_label = {t["id"]: str(t["label"]).lower() for t in client.get("/api/v3/tag")}
     label_tag = {lbl: tid for tid, lbl in tag_label.items()}
     owned = {cfg.dupe, cfg.partial} | {_PREFIX + lbl for lbl in server_labels.values()}
+    owned.discard(cfg.ignore)  # the user's ignore tag is never the tool's to remove
 
     support = _supported(ctx, instance_id)
     items = ctx.db.scalars(
@@ -81,6 +82,7 @@ def _sync_instance(ctx: ScanContext, instance_id: str, client: ArrClient,
                 desired.add(cfg.partial)
             if cfg.per_server_tags:
                 desired |= {_PREFIX + server_labels[s] for s in servers if s in server_labels}
+        desired.discard(cfg.ignore)
         current = {tag_label[t] for t in item.tag_ids or [] if t in tag_label}
         for lbl in sorted(desired - current):
             to_add[lbl].append(item)

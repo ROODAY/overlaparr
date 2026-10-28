@@ -1,3 +1,5 @@
+import json
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -43,6 +45,10 @@ def test_put_settings_rejects_other_sections(authed):
     bad = authed.put("/api/v1/settings", json={"tags": {"dupe": "Bad Tag"}})
     assert bad.status_code == 422
     assert authed.app.state.store.current.tags.dupe == "dupe-elsewhere"
+    clash = authed.put("/api/v1/settings", json={"tags": {"ignore": "dupe-elsewhere"}})
+    assert clash.status_code == 422
+    assert "must be different" in json.dumps(clash.json())
+    assert authed.app.state.store.current.tags.ignore == "dupe-ignore"
 
 
 def test_config_error_surfaced(authed, tmp_path):

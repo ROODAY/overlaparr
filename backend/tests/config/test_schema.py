@@ -146,3 +146,10 @@ def test_logging_bounds_and_level():
     with pytest.raises(ValidationError):
         LoggingConfig(level="VERBOSE")
     LoggingConfig(level="DEBUG", backup_count=0)
+
+
+@pytest.mark.parametrize("kw", [{"ignore": "dupe-elsewhere"}, {"partial": "dupe-elsewhere"},
+                                {"ignore": "dupe-partial"}])
+def test_tag_names_must_be_distinct(kw):
+    with pytest.raises(ValidationError, match="must be different"):
+        TagsConfig(**kw)

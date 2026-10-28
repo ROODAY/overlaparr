@@ -94,6 +94,13 @@ class TagsConfig(_Base):
             raise ValueError("tag names must match ^[a-z0-9-]+$")
         return v
 
+    @model_validator(mode="after")
+    def _distinct(self) -> "TagsConfig":
+        names = [self.dupe, self.partial, self.ignore]
+        if len(set(names)) != len(names):
+            raise ValueError("the dupe, partial and ignore tag names must be different")
+        return self
+
 
 class Rule(_Base):
     id: str
