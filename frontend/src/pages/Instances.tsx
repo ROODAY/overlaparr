@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useState } from "react";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
 import { MASK, type Instance } from "../api/types";
 import { Badge } from "../components/Badge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Modal } from "../components/Modal";
 import { Switch } from "../components/Switch";
 import { useToast } from "../components/useToast";
 import { InstanceForm } from "../features/instances/InstanceForm";
@@ -177,51 +178,6 @@ export function Instances() {
           onCancel={() => setDeleting(null)}
         />
       )}
-    </div>
-  );
-}
-
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const titleId = useId();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="mt-16 w-full max-w-lg rounded-lg border border-slate-700 bg-slate-800 p-5 shadow-xl"
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 id={titleId} className="text-lg font-semibold text-slate-100">
-            {title}
-          </h2>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded px-2 text-xl text-slate-400 hover:bg-slate-700 hover:text-slate-100"
-          >
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }

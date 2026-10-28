@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
 import type {
+  ActionName,
   ActionResult,
   ActivityEntry,
   ActivityQuery,
@@ -17,7 +18,7 @@ import { formatDateTime } from "../lib/format";
 
 const PAGE_SIZE = 50;
 
-const ACTIONS = [
+const ACTIONS: (ActionName | "clear_hold")[] = [
   "unmonitor",
   "delete",
   "exclude",

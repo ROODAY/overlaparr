@@ -164,7 +164,7 @@ describe("Notifications", () => {
     expect(await screen.findByText(/SMTP auth failed: 535/)).toBeInTheDocument();
   });
 
-  it("adds a Discord connection with all events off", async () => {
+  it("adds a disabled Discord connection with all events off", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Notifications />, { route: "/notifications" });
     await screen.findByRole("row", { name: /Mail/ });
@@ -181,7 +181,7 @@ describe("Notifications", () => {
     expect(posts[0]).toEqual({
       type: "discord",
       name: "Ops",
-      enabled: true,
+      enabled: false,
       webhook_url: "https://discord.test/hook",
       events: NO_EVENTS,
       digest: { mode: "off", time: "09:00", weekday: 0, cron: null },
@@ -256,6 +256,31 @@ describe("Notifications", () => {
       events: { ...NO_EVENTS, new_findings: true, finding_lost: true },
       digest: { mode: "weekly", time: "08:30", weekday: 2, cron: null },
     });
+  });
+
+  it("editing an Apprise connection warns that URLs are re-entered together", async () => {
+    connections = [
+      {
+        id: "n-3",
+        name: "Apprise",
+        type: "apprise",
+        enabled: true,
+        events: NO_EVENTS,
+        digest: { mode: "off", time: "09:00", weekday: 0, cron: null },
+        urls: [MASK, MASK],
+        last_sent: null,
+      },
+    ];
+    const user = userEvent.setup();
+    renderWithProviders(<Notifications />, { route: "/notifications" });
+    await screen.findByRole("row", { name: /Apprise/ });
+    await user.click(row(/Apprise/).getByRole("button", { name: "Edit" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByLabelText("URLs")).toHaveValue(`${MASK}
+${MASK}`);
+    expect(
+      dialog.getByText(/Changing any URL requires re-entering all of them\./),
+    ).toBeInTheDocument();
   });
 
   it("delete confirms and sends DELETE", async () => {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
 import type {
@@ -16,6 +16,7 @@ import type {
 } from "../api/types";
 import { Badge } from "../components/Badge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Modal } from "../components/Modal";
 import { SecretInput } from "../components/SecretInput";
 import { Switch } from "../components/Switch";
 import { useToast } from "../components/useToast";
@@ -289,6 +290,7 @@ function Connections() {
       {editing && (
         <Modal
           title={editing === "new" ? "Add connection" : "Edit connection"}
+          size="lg"
           onClose={() => setEditing(null)}
         >
           <ConnectionForm
@@ -417,7 +419,7 @@ function ConnectionForm({
 
   const [name, setName] = useState(initial?.name ?? "");
   const [type, setType] = useState<NotificationType>(initial?.type ?? "email");
-  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [enabled, setEnabled] = useState(initial?.enabled ?? false);
   const [host, setHost] = useState(email?.host ?? "");
   const [port, setPort] = useState(String(email?.port ?? 587));
   const [tls, setTls] = useState(email?.tls ?? "starttls");
@@ -652,7 +654,15 @@ function ConnectionForm({
       )}
 
       {type === "apprise" && (
-        <Field id={field("urls")} label="URLs" hint="One Apprise URL per line">
+        <Field
+          id={field("urls")}
+          label="URLs"
+          hint={
+            apprise
+              ? "One Apprise URL per line. Changing any URL requires re-entering all of them."
+              : "One Apprise URL per line"
+          }
+        >
           <textarea
             id={field("urls")}
             rows={3}
@@ -864,50 +874,5 @@ function Checkbox({
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
-  );
-}
-
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const titleId = useId();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="mt-16 w-full max-w-2xl rounded-lg border border-slate-700 bg-slate-800 p-5 shadow-xl"
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 id={titleId} className="text-lg font-semibold text-slate-100">
-            {title}
-          </h2>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded px-2 text-xl text-slate-400 hover:bg-slate-700 hover:text-slate-100"
-          >
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
   );
 }

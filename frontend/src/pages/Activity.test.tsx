@@ -91,7 +91,7 @@ describe("Activity", () => {
     expect(await screen.findByText("Action undone")).toBeInTheDocument();
   });
 
-  it("filters send query params and reset the page", async () => {
+  it("filters send query params", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Activity />, { route: "/activity" });
     await screen.findByRole("row", { name: /Heat/ });
@@ -111,8 +111,22 @@ describe("Activity", () => {
     await waitFor(() => expect(last().get("rule")).toBe("r-1"));
 
     expect(last().get("actor")).toBe("auto");
-    expect(last().get("page")).toBe("1");
     expect(last().get("page_size")).toBe("50");
+  });
+
+  it("changing a filter resets the page to 1", async () => {
+    total = 120;
+    const user = userEvent.setup();
+    renderWithProviders(<Activity />, { route: "/activity" });
+    expect(await screen.findByText(/Page 1 of 3/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(last().get("page")).toBe("2"));
+    expect(await screen.findByText(/Page 2 of 3/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Actor"), "auto");
+    await waitFor(() => expect(last().get("actor")).toBe("auto"));
+    expect(last().get("page")).toBe("1");
+    expect(await screen.findByText(/Page 1 of 3/)).toBeInTheDocument();
   });
 
   it("date filters send local day bounds", async () => {
