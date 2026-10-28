@@ -98,7 +98,8 @@ function ActionBar({
     >
       <span className="font-medium text-slate-100">
         {ids.length} selected
-        {selection.bytes > 0 && ` · ${formatBytes(selection.bytes)}`}
+        {/* Approximate: a multi-episode file counts per episode; the dialog is exact. */}
+        {selection.bytes > 0 && ` · ≈${formatBytes(selection.bytes)}`}
       </span>
       <span className="text-slate-400">Select:</span>
       <button type="button" className={link} onClick={selection.selectCovered}>

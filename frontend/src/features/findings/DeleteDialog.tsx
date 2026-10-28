@@ -56,11 +56,17 @@ export function DeleteDialog({
   });
   const rejected = new Set((preview.data?.rejected ?? []).map((r) => r.index));
   const accepted = requests.filter((_, i) => !rejected.has(i));
+  // Selected episodes without files: there is nothing to delete.
+  const nothing = !wholeItems && preview.data?.episodes === 0;
   const name = useId();
 
   const body = (
     <div className="space-y-3">
-      <PreviewText preview={preview.data} error={preview.error} targets={targets} />
+      {nothing ? (
+        <p className="text-amber-300">Nothing to delete: none of the selected episodes have files.</p>
+      ) : (
+        <PreviewText preview={preview.data} error={preview.error} targets={targets} />
+      )}
       {wholeItems && (
         <fieldset className="space-y-1">
           <legend className="sr-only">Delete mode</legend>
@@ -111,7 +117,9 @@ export function DeleteDialog({
       body={body}
       confirmLabel="Delete"
       destructive
-      confirmDisabled={!preview.data || preview.data.items === 0 || accepted.length === 0}
+      confirmDisabled={
+        !preview.data || preview.data.items === 0 || accepted.length === 0 || nothing
+      }
       onConfirm={() => onConfirm(accepted)}
       onCancel={onCancel}
     />

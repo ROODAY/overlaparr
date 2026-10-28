@@ -67,10 +67,10 @@ function logRow(overrides: Partial<ActivityEntry> = {}): ActivityEntry {
     prior_state: {},
     result: "ok",
     message: null,
-    undoable: false,
+    undoable: true,
     undone_at: null,
     undo_of_id: null,
-    can_undo: false,
+    can_undo: true,
     ...overrides,
   };
 }

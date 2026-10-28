@@ -63,6 +63,8 @@ export function History({ rows }: { rows: ActivityEntry[] }) {
     <ul aria-label="History" className="divide-y divide-slate-800 rounded-lg border border-slate-700">
       {rows.map((row) => {
         const scope = scopeText(row.scope);
+        // Deleted files never come back; undo of a delete only restores monitoring.
+        const isDelete = row.action === "delete" && row.undo_of_id == null;
         return (
           <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
             <span className="text-slate-400">{formatDateTime(row.ts)}</span>
@@ -71,21 +73,24 @@ export function History({ rows }: { rows: ActivityEntry[] }) {
             <span className="text-slate-400">
               {row.actor === "auto" ? `Automation${row.rule_name ? `: ${row.rule_name}` : ""}` : "You"}
             </span>
-            {row.result === "error" && (
+            {row.result === "error" ? (
               <span className="text-red-300">Failed{row.message ? `: ${row.message}` : ""}</span>
+            ) : (
+              row.message && <span className="text-slate-300">{row.message}</span>
             )}
+            {isDelete && <span className="font-medium text-red-300">Files cannot be restored</span>}
             {row.result === "dry_run" && <span className="text-amber-300">Dry run</span>}
             <span className="ml-auto">
               {row.undone_at ? (
                 <span className="text-slate-400">Undone {formatDateTime(row.undone_at)}</span>
-              ) : row.undoable ? (
+              ) : row.can_undo ? (
                 <button
                   type="button"
                   disabled={undo.isPending}
                   onClick={() => undo.mutate(row)}
                   className="rounded border border-slate-600 px-2 py-0.5 text-slate-200 hover:bg-slate-700 disabled:opacity-50"
                 >
-                  Undo
+                  {isDelete ? "Undo unmonitor" : "Undo"}
                 </button>
               ) : (
                 <span className="text-slate-500">Cannot be undone</span>

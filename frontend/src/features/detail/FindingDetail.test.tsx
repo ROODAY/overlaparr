@@ -70,13 +70,25 @@ describe("FindingDetail", () => {
     );
   });
 
-  it("shows undo only for undoable rows not yet undone", async () => {
+  it("shows undo only for rows the API says can be undone", async () => {
     detail = movieDetailFixture({
       history: [
         activityFixture({ id: 7, action: "unmonitor" }),
-        activityFixture({ id: 8, action: "tag", undone_at: "2026-10-27T11:00:00Z" }),
-        activityFixture({ id: 9, action: "delete", undoable: false, can_undo: false }),
-        activityFixture({ id: 10, action: "quality_profile", actor: "auto", undoable: false }),
+        activityFixture({
+          id: 8,
+          action: "tag",
+          undone_at: "2026-10-27T11:00:00Z",
+          can_undo: false,
+        }),
+        // An error row the backend would refuse to undo, though flagged undoable.
+        activityFixture({ id: 9, action: "exclude", result: "error", can_undo: false }),
+        activityFixture({
+          id: 10,
+          action: "quality_profile",
+          actor: "auto",
+          undoable: false,
+          can_undo: false,
+        }),
       ],
     });
     const undos: string[] = [];
@@ -92,9 +104,9 @@ describe("FindingDetail", () => {
     const rows = within(history).getAllByRole("listitem");
     expect(rows).toHaveLength(4);
     expect(within(rows[0]).getByRole("button", { name: "Undo" })).toBeInTheDocument();
-    expect(within(rows[1]).queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(within(rows[1]).queryByRole("button")).not.toBeInTheDocument();
     expect(rows[1]).toHaveTextContent("Undone");
-    expect(within(rows[2]).queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(within(rows[2]).queryByRole("button")).not.toBeInTheDocument();
     expect(rows[2]).toHaveTextContent("Cannot be undone");
     expect(rows[3]).toHaveTextContent("Set quality profile");
     expect(rows[3]).toHaveTextContent("Cannot be undone");
@@ -102,6 +114,29 @@ describe("FindingDetail", () => {
     await user.click(within(rows[0]).getByRole("button", { name: "Undo" }));
     expect(await screen.findByText("Undo failed: Instance no longer configured")).toBeInTheDocument();
     expect(undos).toEqual(["7"]);
+  });
+
+  it("says deleted files cannot be restored, even when the unmonitor can be undone", async () => {
+    detail = movieDetailFixture({
+      history: [
+        activityFixture({
+          id: 11,
+          action: "delete",
+          message: "1 file(s) deleted; undo restores monitoring only, deleted files are gone",
+        }),
+        activityFixture({ id: 12, action: "delete", undoable: false, can_undo: false }),
+      ],
+    });
+    renderDetail();
+    const history = await screen.findByRole("list", { name: "History" });
+    const [undoable, plain] = within(history).getAllByRole("listitem");
+    expect(within(undoable).getByRole("button", { name: "Undo unmonitor" })).toBeInTheDocument();
+    expect(within(undoable).queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(undoable).toHaveTextContent("Files cannot be restored");
+    expect(undoable).toHaveTextContent("undo restores monitoring only");
+    expect(within(plain).queryByRole("button")).not.toBeInTheDocument();
+    expect(plain).toHaveTextContent("Files cannot be restored");
+    expect(plain).toHaveTextContent("Cannot be undone");
   });
 
   it("renders the season grid for a series", async () => {

@@ -79,6 +79,7 @@ function IgnoreMenu({
 }) {
   const [open, setOpen] = useState(false);
   const servers = finding.elsewhere.filter((e) => !e.ignored);
+  const wholeIgnored = finding.review_state === "ignored";
   const choose = (serverId: string | null, label: string) => {
     setOpen(false);
     onIgnore(serverId, label);
@@ -90,7 +91,7 @@ function IgnoreMenu({
         type="button"
         aria-expanded={open}
         className={BUTTON}
-        disabled={disabled}
+        disabled={disabled || (wholeIgnored && servers.length === 0)}
         onClick={() => setOpen(!open)}
       >
         Ignore…
@@ -101,9 +102,11 @@ function IgnoreMenu({
           aria-label="Ignore"
           className="absolute right-0 z-30 mt-1 w-56 rounded border border-slate-600 bg-slate-800 py-1 text-sm text-slate-200 shadow-lg"
         >
-          <button type="button" className={item} onClick={() => choose(null, "Ignore")}>
-            Whole finding
-          </button>
+          {!wholeIgnored && (
+            <button type="button" className={item} onClick={() => choose(null, "Ignore")}>
+              Whole finding
+            </button>
+          )}
           {servers.map((s) => (
             <button
               key={s.server_id}

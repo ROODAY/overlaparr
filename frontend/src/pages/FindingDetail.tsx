@@ -83,6 +83,7 @@ function HoldBanner({ id }: { id: number }) {
     mutationFn: () => api.post<HoldResult>(`/findings/${id}/hold`, { hold: false }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.findings });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
     },
     onError: (error) => {
       const detail = error instanceof ApiError ? error.detail : "Could not reach Overlaparr";
