@@ -14,7 +14,7 @@ def test_main_runs_factory_without_uvicorn_log_config(monkeypatch):
     calls = _captured_run(monkeypatch)
     server.main()
     assert calls == [(("overlaparr.main:app_factory",), {
-        "factory": True, "host": "0.0.0.0", "port": 8686, "log_config": None,
+        "factory": True, "host": "0.0.0.0", "port": 8686, "log_config": None, "proxy_headers": False,
     })]
 
 

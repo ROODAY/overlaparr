@@ -17,3 +17,4 @@ tmp-config
 **/*.db-wal
 **/*.db-shm
 docker-compose*.yml
+**/.env*

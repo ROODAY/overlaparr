@@ -15,10 +15,13 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
+      # Port the app listens on inside the container; mapped to the same host port below.
+      # Set it in your shell or a .env file next to this compose file (default 8686).
+      - OVERLAPARR_PORT=${OVERLAPARR_PORT:-8686}
     volumes:
       - ./overlaparr:/config
     ports:
-      - "${OVERLAPARR_PORT:-8686}:8686"
+      - "${OVERLAPARR_PORT:-8686}:${OVERLAPARR_PORT:-8686}"
     networks:
       - media
     restart: unless-stopped

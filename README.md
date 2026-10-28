@@ -60,21 +60,30 @@ Everything lives in the `/config` volume:
 | --- | --- | --- |
 | `PUID` | `1000` | User id the app runs as and that owns `/config`. |
 | `PGID` | `1000` | Group id for the same. |
-| `TZ` | (container default, UTC) | Time zone for schedules and timestamps shown in logs. |
-| `OVERLAPARR_PORT` | `8686` | Port the app listens on inside the container. |
+| `TZ` | `UTC` | Time zone for the scan, digest and housekeeping schedules (log timestamps are always UTC). |
+| `OVERLAPARR_PORT` | `8686` | Port the app listens on **inside the container** (the healthcheck follows it). |
+
+The example compose file passes `OVERLAPARR_PORT` into the container and maps the same port
+on the host (`${OVERLAPARR_PORT:-8686}:${OVERLAPARR_PORT:-8686}`), so setting it in your shell
+or a `.env` file changes both. With plain `docker run`, set it with `-e` and map that port.
 
 ## Safety
 
-- **Report-only by default.** Scans never modify anything.
-- **Deletes are permanent.** Deleting from Sonarr/Radarr removes the files; the UI says so
-  before you confirm.
-- **Automation is opt-in per rule**, and the UI warns you before a rule is enabled.
-  Rules that delete also require typing `DELETE` to confirm.
-- **Dry run** lets you see what a rule would do without doing it.
-- **Offline or stale servers never count as "gone".** If a Plex server can't be reached,
-  its content is not treated as removed and nothing acts on that assumption.
-- Overlaparr never removes the `dupe-ignore` tag. Add it to an item in Sonarr/Radarr to
-  exclude that item from findings.
+- **Report-only by default.** Out of the box a scan only reads. The optional features that
+  write to Sonarr/Radarr are all off until you turn them on: tag mirroring, per-instance
+  loss handling (re-monitor/search when an item disappears elsewhere) and automation rules.
+- **Deletes are permanent.** A delete either removes the files (the movie or
+  episodes stay in Sonarr/Radarr, unmonitored) or removes the whole movie/series with its
+  files. The delete
+  dialog says "Deleted files cannot be undone" before you confirm.
+- **Automation is opt-in per rule.** Rules are created disabled, and enabling one shows a
+  warning describing what it will do. Enabling a delete rule also requires typing `DELETE`.
+- **Dry run.** "Dry run" on a rule makes the next scan log what the rule would do without
+  doing it.
+- **Offline or stale servers never count as "gone".** If a Plex server can't be reached, its
+  copies are kept as stale rather than marked lost, so nothing acts on that assumption.
+- Overlaparr never removes the ignore tag (`dupe-ignore` by default). Add it to an item in
+  Sonarr/Radarr to exclude that item from findings and automation.
 
 ## Authentication
 
@@ -87,13 +96,18 @@ Overlaparr has a single user with a forms login. For scripting, send the API key
 > can reach the port, including the internet. Only enable it when the app is reachable
 > exclusively on a trusted LAN.
 
+Overlaparr deliberately ignores `X-Forwarded-For` and similar proxy headers: only the actual
+network peer decides whether a request is "local", so a client can't fake a local address
+through a header. As a result, client IPs in the access log are your proxy's address.
+
 ## Notifications
 
 Add connections under **Notifications**: email (SMTP), Discord, generic webhook, or Apprise
 (which covers many other services). For each connection choose which events trigger it (new
-findings, automation actions and deletes, findings that are lost, scan problems, app errors)
-and optionally a digest (daily, weekly or cron) instead of immediate messages. Use the
-**Test** button to send a test message.
+findings, automation actions, automation deletes, findings lost, scan problems, app errors).
+Each connection can also send a scheduled digest (daily, weekly or cron) that summarises
+findings and recent activity, in addition to its event messages. The **Test** button sends
+a test message and records the result in the delivery history.
 
 ## Logs
 
