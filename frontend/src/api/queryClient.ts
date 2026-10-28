@@ -8,6 +8,8 @@ export const queryKeys = {
   dashboard: ["dashboard"],
   instances: ["instances"],
   scanStatus: ["scan-status"],
+  /** Prefix for every findings list query (the full key adds the query string). */
+  findings: ["findings"],
 } as const;
 
 export function createQueryClient(): QueryClient {

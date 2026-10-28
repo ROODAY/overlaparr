@@ -9,6 +9,8 @@ export interface ConfirmDialogProps {
   destructive?: boolean;
   /** When set, confirm stays disabled until the user types exactly this text. */
   requireText?: string;
+  /** Keeps confirm disabled, e.g. while the dialog's content is still loading. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -25,13 +27,14 @@ function DialogContent({
   confirmLabel,
   destructive = false,
   requireText,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const [typed, setTyped] = useState("");
   const titleId = useId();
   const inputId = useId();
-  const blocked = requireText !== undefined && typed !== requireText;
+  const blocked = confirmDisabled || (requireText !== undefined && typed !== requireText);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

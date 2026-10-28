@@ -1,4 +1,4 @@
-import type { Dashboard, ScanProgress, ScanStatus } from "../api/types";
+import type { Dashboard, Finding, ScanProgress, ScanStatus } from "../api/types";
 
 export const IDLE: ScanProgress = {
   phase: null,
@@ -41,6 +41,43 @@ export function dashboardFixture(overrides: Partial<Dashboard> = {}): Dashboard 
       { id: "i-3", name: "Radarr", ok: null },
     ],
     config_error: null,
+    ...overrides,
+  };
+}
+
+export function findingFixture(overrides: Partial<Finding> = {}): Finding {
+  return {
+    id: 1,
+    instance: { id: "i-2", name: "Radarr", type: "radarr" },
+    arr_id: 10,
+    kind: "movie",
+    type: "on_disk",
+    title: "Heat",
+    year: 1995,
+    poster_url: null,
+    yours: { resolution: "1080p", size: 8_589_934_592 },
+    elsewhere: [
+      {
+        server_id: "m-a",
+        label: "Alpha",
+        resolution: "2160p",
+        hdr: true,
+        stale: false,
+        ignored: false,
+      },
+    ],
+    badges: {
+      coverage: "full",
+      covered_count: 1,
+      relevant_count: 1,
+      best_quality: "better",
+      edition: "same",
+      has_number_matches: false,
+    },
+    review_state: "new",
+    lifecycle: "active",
+    automation_hold: false,
+    arr_url: null,
     ...overrides,
   };
 }
