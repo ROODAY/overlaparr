@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import App from "./App";
+import { dashboardFixture } from "./test/fixtures";
 import { server } from "./test/server";
 
 const SIDEBAR = [
@@ -34,7 +35,9 @@ const unauthenticated = http.get("*/api/v1/auth/me", () =>
 const authenticated = http.get("*/api/v1/auth/me", () => HttpResponse.json({ principal: "admin" }));
 
 function dashboard(configError: string | null = null) {
-  return http.get("*/api/v1/dashboard", () => HttpResponse.json({ config_error: configError }));
+  return http.get("*/api/v1/dashboard", () =>
+    HttpResponse.json(dashboardFixture({ config_error: configError })),
+  );
 }
 
 function renderAt(path: string) {
@@ -66,7 +69,7 @@ describe("App routing", () => {
     const links = within(nav).getAllByRole("link");
     expect(links.map((l) => l.textContent)).toEqual(SIDEBAR);
     expect(links[0]).toHaveAttribute("href", "/");
-    expect(screen.getByText("Dashboard — coming soon")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -103,7 +106,7 @@ describe("App routing", () => {
   it("redirects /login to the dashboard when already signed in", async () => {
     server.use(status(false), authenticated, dashboard());
     renderAt("/login");
-    expect(await screen.findByText("Dashboard — coming soon")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/");
   });
 
@@ -169,7 +172,7 @@ describe("App routing", () => {
     await user.clear(screen.getByLabelText("Password"));
     await user.type(screen.getByLabelText("Password"), "secret");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByText("Dashboard — coming soon")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/");
   });
 

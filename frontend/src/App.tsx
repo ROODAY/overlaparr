@@ -13,6 +13,8 @@ import { api, ApiError, setUnauthorizedHandler } from "./api/client";
 import { createQueryClient, queryKeys } from "./api/queryClient";
 import type { Me, SetupStatus } from "./api/types";
 import { Layout } from "./components/Layout";
+import { ToastProvider } from "./components/Toast";
+import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 import { Setup } from "./pages/Setup";
@@ -21,9 +23,11 @@ export default function App() {
   const [queryClient] = useState(createQueryClient);
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
@@ -73,7 +77,7 @@ function AppRoutes() {
       <Route path="/setup" element={<Setup />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
-          <Route index element={<Placeholder name="Dashboard" />} />
+          <Route index element={<Dashboard />} />
           <Route path="findings" element={<Placeholder name="Findings" />} />
           <Route path="findings/:id" element={<Placeholder name="Findings" />} />
           <Route path="automation" element={<Placeholder name="Automation" />} />

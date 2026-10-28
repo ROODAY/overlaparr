@@ -7,6 +7,7 @@ export const queryKeys = {
   me: ["me"],
   dashboard: ["dashboard"],
   instances: ["instances"],
+  scanStatus: ["scan-status"],
 } as const;
 
 export function createQueryClient(): QueryClient {
