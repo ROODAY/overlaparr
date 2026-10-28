@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "../../api/client";
-import type { RuleAction, RuleWarning } from "../../api/types";
+import type { DeleteMode, RuleAction, RuleWarning } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 /**
@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 export function EnableDialog({
   open,
   action,
+  deleteMode,
   ruleName,
   confirmLabel,
   onConfirm,
@@ -17,6 +18,8 @@ export function EnableDialog({
 }: {
   open: boolean;
   action: RuleAction;
+  /** Chosen delete mode; "remove_item" deletes the whole item and its files. */
+  deleteMode?: DeleteMode;
   ruleName: string;
   confirmLabel: string;
   onConfirm: () => void;
@@ -29,6 +32,7 @@ export function EnableDialog({
     staleTime: Infinity,
   });
   const isDelete = action === "delete";
+  const removesItem = isDelete && deleteMode === "remove_item";
 
   return (
     <ConfirmDialog
@@ -48,7 +52,15 @@ export function EnableDialog({
             {warning.error instanceof ApiError ? warning.error.detail : "Could not load the warning"}
           </p>
         ) : (
-          <p className={isDelete ? "text-red-200" : undefined}>{warning.data.text}</p>
+          <div>
+            <p className={isDelete ? "text-red-200" : undefined}>{warning.data.text}</p>
+            {removesItem && (
+              <p className="mt-2 text-red-200">
+                This removes whole movies/series from Radarr/Sonarr with their files. Loss
+                handling cannot restore them.
+              </p>
+            )}
+          </div>
         )
       }
     />

@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
 import type { Dashboard, Instance, Rule, RuleIn, RuleWithRun } from "../api/types";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Switch } from "../components/Switch";
 import { useToast } from "../components/useToast";
 import { defaultRule, toDraft, type RuleDraft } from "../features/rules/defaults";
@@ -23,8 +24,8 @@ export function RuleEditor() {
   });
 
   if (isNew) return <EditorForm key="new" />;
-  if (rules.isPending) return <p className="text-slate-400">Loading…</p>;
-  if (rules.isError) {
+  if (!rules.data) {
+    if (rules.isPending) return <p className="text-slate-400">Loading…</p>;
     return (
       <p role="alert" className="text-red-300">
         {rules.error instanceof ApiError ? rules.error.detail : "Could not load rules"}
@@ -42,7 +43,29 @@ export function RuleEditor() {
       </p>
     );
   }
-  return <EditorForm key={rule.id} original={rule} />;
+  return (
+    <>
+      {rules.isError && (
+        <div
+          role="alert"
+          className="mb-3 flex flex-wrap items-center gap-3 rounded border border-red-500/40 bg-red-950/40 px-3 py-2 text-sm text-red-200"
+        >
+          <span>
+            Could not refresh the rules:{" "}
+            {rules.error instanceof ApiError ? rules.error.detail : "could not reach Overlaparr"}
+          </span>
+          <button
+            type="button"
+            onClick={() => void rules.refetch()}
+            className="rounded border border-red-400/50 px-3 py-1 text-red-100 hover:bg-red-900/50"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      <EditorForm key={rule.id} original={rule} />
+    </>
+  );
 }
 
 /** Was the saved rule already enabled (and DELETE-confirmed) for this same action? */
@@ -57,6 +80,7 @@ function EditorForm({ original }: { original?: Rule }) {
     original ? toDraft(original) : defaultRule(),
   );
   const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameId = useId();
   const navigate = useNavigate();
@@ -81,6 +105,19 @@ function EditorForm({ original }: { original?: Rule }) {
       navigate("/automation");
     },
     onError: (e) => setError(e instanceof ApiError ? e.detail : "Could not reach Overlaparr"),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api.del(`/rules/${original?.id ?? ""}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.rules });
+      toast("Rule deleted");
+      navigate("/automation");
+    },
+    onError: (e) => {
+      setDeleting(false);
+      setError(e instanceof ApiError ? e.detail : "Could not reach Overlaparr");
+    },
   });
 
   const patch = (changes: Partial<RuleDraft>) => setDraft((d) => ({ ...d, ...changes }));
@@ -175,6 +212,15 @@ function EditorForm({ original }: { original?: Rule }) {
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {original && (
+            <button
+              type="button"
+              onClick={() => setDeleting(true)}
+              className="rounded px-4 py-2 text-sm text-red-300 hover:bg-red-950/50"
+            >
+              Delete rule
+            </button>
+          )}
+          {original && (
             <DryRunButton
               rule={{ id: original.id, dry_run_next: draft.dry_run_next }}
               onQueued={() => patch({ dry_run_next: true })}
@@ -196,9 +242,24 @@ function EditorForm({ original }: { original?: Rule }) {
           </button>
         </div>
       </form>
+      {deleting && (
+        <ConfirmDialog
+          open
+          title={`Delete ${original?.name ?? draft.name}?`}
+          body={
+            <>This removes the rule from config.yaml. Past activity stays in the log.</>
+          }
+          confirmLabel="Delete rule"
+          destructive
+          confirmDisabled={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setDeleting(false)}
+        />
+      )}
       <EnableDialog
         open={confirming}
         action={draft.action}
+        deleteMode={draft.delete_mode}
         ruleName={draft.name}
         confirmLabel="Enable and save"
         onCancel={() => setConfirming(false)}

@@ -162,6 +162,7 @@ export function Automation() {
         <EnableDialog
           open
           action={pendingEnable.action}
+          deleteMode={pendingEnable.delete_mode}
           ruleName={pendingEnable.name}
           confirmLabel="Enable"
           onCancel={() => setPendingEnable(null)}

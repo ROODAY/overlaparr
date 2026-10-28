@@ -276,6 +276,76 @@ describe("RuleEditor", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("keeps the form and unsaved edits when the rules refetch fails", async () => {
+    let calls = 0;
+    server.use(
+      http.get("*/api/v1/rules", () => {
+        calls += 1;
+        return calls === 1
+          ? HttpResponse.json([ruleFixture()])
+          : HttpResponse.json({ detail: "Could not read rules" }, { status: 400 });
+      }),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderEditor("/automation/r-1");
+    const name = await screen.findByLabelText("Name");
+    await user.type(name, " (edited)");
+
+    await queryClient.refetchQueries({ queryKey: ["rules"] });
+    expect(
+      await screen.findByText("Could not refresh the rules: Could not read rules"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Unmonitor wanted (edited)");
+    expect(screen.getByRole("button", { name: "Save rule" })).toBeInTheDocument();
+  });
+
+  it("deletes the rule after confirmation", async () => {
+    const deletes: string[] = [];
+    server.use(
+      http.delete("*/api/v1/rules/:id", ({ params }) => {
+        deletes.push(String(params.id));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderEditor("/automation/r-1");
+    await screen.findByRole("heading", { name: "Edit rule" });
+    // The dialog names the saved rule even while the draft name is blank.
+    await user.clear(screen.getByLabelText("Name"));
+
+    await user.click(screen.getByRole("button", { name: "Delete rule" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveAccessibleName("Delete Unmonitor wanted?");
+    expect(dialog).toHaveTextContent(
+      "This removes the rule from config.yaml. Past activity stays in the log.",
+    );
+    expect(deletes).toEqual([]);
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete rule" }));
+    await waitFor(() => expect(deletes).toEqual(["r-1"]));
+    expect(await screen.findByText("Rule deleted")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/automation$/));
+  });
+
+  it("warns that a whole-item delete rule removes the files with it", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await screen.findByRole("heading", { name: "New rule" });
+    await user.type(screen.getByLabelText("Name"), "Whole items");
+    await user.click(group("Action").getByRole("button", { name: "Delete" }));
+    await user.click(group("Delete mode").getByRole("button", { name: "Remove from Radarr" }));
+    await user.click(screen.getByRole("switch", { name: "Enabled" }));
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText(
+        /This removes whole movies\/series from Radarr\/Sonarr with their files\./,
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/Loss handling cannot restore them/)).toBeInTheDocument();
+  });
+
   it("shows the backend rejection", async () => {
     server.use(
       http.post("*/api/v1/rules", () =>

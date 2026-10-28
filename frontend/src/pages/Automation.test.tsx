@@ -117,6 +117,39 @@ describe("Automation", () => {
     );
   });
 
+  it("warns that a whole-item delete rule removes the files with it", async () => {
+    rules = [
+      ruleFixture({
+        id: "r-4",
+        name: "Remove whole items",
+        action: "delete",
+        delete_mode: "remove_item",
+      }),
+      ruleFixture({ id: "r-5", name: "Delete files", action: "delete", delete_mode: "files" }),
+    ];
+    const user = userEvent.setup();
+    renderWithProviders(<Automation />, { route: "/automation" });
+    await screen.findByRole("link", { name: "Remove whole items" });
+
+    await user.click(
+      row("Remove whole items").getByRole("switch", { name: "Enable Remove whole items" }),
+    );
+    let dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText(
+        /This removes whole movies\/series from Radarr\/Sonarr with their files\./,
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/Loss handling cannot restore them/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    // A files-mode delete rule does not get the whole-item warning.
+    await user.click(row("Delete files").getByRole("switch", { name: "Enable Delete files" }));
+    dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Warning for delete.")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Loss handling cannot restore them/)).not.toBeInTheDocument();
+  });
+
   it("reorders with up/down buttons", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Automation />, { route: "/automation" });
