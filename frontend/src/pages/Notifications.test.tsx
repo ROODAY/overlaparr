@@ -164,6 +164,47 @@ describe("Notifications", () => {
     expect(await screen.findByText(/SMTP auth failed: 535/)).toBeInTheDocument();
   });
 
+  it("a test send refreshes last sent and the history", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("*/api/v1/notifications/:id/test", () => {
+        const now = new Date().toISOString();
+        connections = connections.map((c) => (c.id === "n-1" ? { ...c, last_sent: now } : c));
+        history = [
+          {
+            ts: now,
+            connection_id: "n-1",
+            connection_name: "Mail",
+            event: "test",
+            success: true,
+            error: null,
+          },
+          ...history,
+        ];
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    const { queryClient } = renderWithProviders(<Notifications />, { route: "/notifications" });
+    await screen.findByRole("row", { name: /Mail/ });
+
+    // Visit History first so there is a cached history query that must refresh.
+    await user.click(screen.getByRole("button", { name: "History" }));
+    await screen.findByRole("row", { name: /SMTP auth failed/ });
+    await user.click(screen.getByRole("button", { name: "Connections" }));
+    await screen.findByRole("row", { name: /Mail/ });
+
+    await user.click(row(/Mail/).getByRole("button", { name: "Test" }));
+    expect(await screen.findByText("Test message sent")).toBeInTheDocument();
+
+    await waitFor(() => expect(row(/Mail/).getByText("now")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["notifications", "history"])?.isInvalidated).toBe(true),
+    );
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+    expect(await screen.findByRole("row", { name: /test/ })).toBeInTheDocument();
+  });
+
   it("adds a disabled Discord connection with all events off", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Notifications />, { route: "/notifications" });

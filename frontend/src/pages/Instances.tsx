@@ -168,7 +168,8 @@ export function Instances() {
           title={`Delete ${deleting.name}?`}
           body={
             <>
-              This removes the instance from Overlaparr. Its findings disappear at the next scan.
+              This removes the instance from Overlaparr. Its findings are hidden immediately and
+              purged at the next scan.
             </>
           }
           confirmLabel="Delete instance"

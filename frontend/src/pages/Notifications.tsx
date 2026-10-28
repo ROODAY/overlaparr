@@ -171,8 +171,13 @@ function Connections() {
   const test = useMutation({
     mutationFn: (id: string) => api.post<NotificationTestResult>(`/notifications/${id}/test`),
     onSuccess: (result) => {
-      if (result.ok) toast("Test message sent");
-      else toast(result.error, "error");
+      if (result.ok) {
+        toast("Test message sent");
+        // The send updates "Last sent" and adds a history row.
+        void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS });
+      } else {
+        toast(result.error, "error");
+      }
     },
     onError: (e) => toast(message(e), "error"),
   });

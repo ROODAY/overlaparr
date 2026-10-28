@@ -238,7 +238,8 @@ describe("Instances", () => {
 
     await user.click(row(/Sonarr/).getByRole("button", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/findings disappear at the next scan/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/hidden immediately/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/purged at the next scan/i)).toBeInTheDocument();
     expect(deletes).toEqual([]);
 
     await user.click(within(dialog).getByRole("button", { name: "Delete instance" }));
