@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, MutableHeaders, URL
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from overlaparr import paths
@@ -102,6 +103,73 @@ def _install_error_handlers(app: FastAPI) -> None:
         return JSONResponse({"detail": detail}, status_code=422)
 
     app.add_middleware(_UnhandledErrors)
+
+
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+CROSS_SITE_DETAIL = "Cross-site request rejected"
+DEFAULT_ORIGIN_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_matches_host(origin: str, host: str) -> bool:
+    """True when ``Origin`` names the same host:port the request was addressed to."""
+    if origin.strip().lower() == "null":  # opaque origin (sandboxed iframe, file://)
+        return False
+    try:
+        source = URL(origin)
+        target = URL(f"//{host}")
+        source_port, target_port = source.port, target.port
+    except ValueError:
+        return False
+    if source.scheme not in DEFAULT_ORIGIN_PORTS or not source.hostname:
+        return False
+    if not target.hostname or source.hostname.lower() != target.hostname.lower():
+        return False
+    if target_port is None:  # no port in Host: the browser omitted a default one
+        return True
+    return (source_port or DEFAULT_ORIGIN_PORTS[source.scheme]) == target_port
+
+
+def _is_cross_site(scope: dict, headers: Headers) -> bool:
+    if scope.get("method") not in UNSAFE_METHODS:
+        return False
+    path = scope.get("path", "")
+    if path != "/api" and not path.startswith("/api/"):
+        return False
+    if headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+        return True
+    origin = headers.get("origin")
+    if origin is None:
+        return False  # curl, scripts with X-Api-Key: no Origin is not a browser cross-site
+    return not _origin_matches_host(origin, headers.get("host", ""))
+
+
+class _CrossSiteAndHeaders:
+    """Reject browser cross-site writes; add clickjacking protections everywhere.
+
+    Outermost middleware, so the headers also land on responses produced by the
+    error handlers below it.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if _is_cross_site(scope, Headers(scope=scope)):
+            response = JSONResponse({"detail": CROSS_SITE_DETAIL}, status_code=403)
+            await response(scope, receive, send)
+            return
+
+        async def add_headers(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Frame-Options"] = "DENY"
+                headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+            await send(message)
+
+        await self.app(scope, receive, add_headers)
 
 
 class _UnhandledErrors:
@@ -225,6 +293,7 @@ def create_app(
     app.state.log_path = log_path
 
     _install_error_handlers(app)
+    app.add_middleware(_CrossSiteAndHeaders)  # added last: outermost
 
     @app.get("/health")
     def health() -> dict[str, str]:
