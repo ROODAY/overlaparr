@@ -397,7 +397,7 @@ def _copies(env, finding_id):
 
 
 def _catch_writes():
-    """Any *arr write would land here (unmocked requests are not recorded by respx)."""
+    """Any *arr write lands here and answers 200, so a hook that writes keeps going."""
     return respx.route(method__in=["POST", "PUT", "DELETE"]).respond(json={})
 
 
