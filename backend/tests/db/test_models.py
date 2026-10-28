@@ -108,3 +108,88 @@ def test_timestamps_roundtrip_utc(engine):
         run = s.query(models.ScanRun).one()
         assert run.started_at.tzinfo is not None
         assert abs((datetime.now(UTC) - run.started_at).total_seconds()) < 60
+
+
+def test_finding_ids_never_reused(engine):
+    Session = make_sessionmaker(engine)
+    with Session() as s:
+        s.add(_finding(arr_id=1))
+        s.add(_finding(arr_id=2))
+        s.commit()
+        top = s.query(models.Finding).order_by(models.Finding.id.desc()).first().id
+        s.execute(text("DELETE FROM findings"))
+        s.commit()
+        f = _finding(arr_id=3)
+        s.add(f)
+        s.commit()
+        assert f.id > top
+
+
+def _alembic_cfg(conn):
+    from alembic.config import Config
+
+    from overlaparr.db.session import MIGRATIONS_DIR
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    cfg.attributes["connection"] = conn
+    return cfg
+
+
+def test_migrations_match_models(engine):
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn, opts={"compare_type": True,
+                                                     "render_as_batch": True})
+        assert compare_metadata(ctx, models.Base.metadata) == []
+
+
+def test_autoincrement_migration_keeps_rows_and_children(tmp_path: Path):
+    from alembic import command
+
+    eng = make_engine(tmp_path / "old.db")
+    with eng.begin() as conn:
+        command.upgrade(_alembic_cfg(conn), "init")
+    with eng.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO findings (id, instance_id, arr_id, kind, type, review_state, lifecycle,"
+            " automation_hold, relevant_count, covered_count, relevant_episode_ids, coverage,"
+            " best_quality, edition_summary, has_number_matches, first_seen_scan_id,"
+            " last_seen_scan_id, updated_at) VALUES (3, 'i1', 1, 'movie', 'on_disk', 'new',"
+            " 'active', 0, 1, 1, '[]', 'full', 'same', 'same', 0, 1, 1,"
+            " '2026-10-26 00:00:00.000000')"))
+        conn.execute(text(
+            "INSERT INTO finding_copies (finding_id, server_id, hdr, quality, edition_cmp,"
+            " matched_by, stale) VALUES (3, 'm1', 0, 'same', 'same', 'id', 0)"))
+        conn.execute(text("INSERT INTO finding_server_ignores (finding_id, server_id)"
+                          " VALUES (3, 'm2')"))
+        conn.execute(text(
+            "INSERT INTO rule_states (rule_id, finding_id, consecutive_scans, coverage_hash,"
+            " last_counted_scan_id) VALUES ('r', 3, 1, 'h', 1)"))
+        conn.execute(text(
+            "INSERT INTO action_log (ts, actor, instance_id, instance_name, finding_id, arr_id,"
+            " item_title, action, scope, prior_state, result, undoable) VALUES"
+            " ('2026-10-26 00:00:00.000000', 'ui', 'i1', 'I', 9, 1, 'T', 'unmonitor', '{}',"
+            " '{}', 'ok', 0)"))
+    init_db(eng)
+    Session = make_sessionmaker(eng)
+    with Session() as s:
+        assert [f.id for f in s.query(models.Finding)] == [3]
+        assert s.query(models.FindingCopy).count() == 1
+        assert s.query(models.FindingServerIgnore).count() == 1
+        assert s.query(models.RuleState).count() == 1
+        # a new finding never takes an id an old action-log row still points at
+        f = _finding(arr_id=2)
+        s.add(f)
+        s.commit()
+        assert f.id > 9
+        s.execute(text("DELETE FROM findings WHERE id = 3"))
+        s.commit()
+        assert s.query(models.FindingCopy).count() == 0  # FK cascade still in place
+    with eng.connect() as conn:
+        sql = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name = 'findings'")).scalar()
+        assert "AUTOINCREMENT" in sql.upper()
+    eng.dispose()

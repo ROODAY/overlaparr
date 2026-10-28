@@ -160,7 +160,12 @@ class TrackedEpisode(Base):
 
 class Finding(Base):
     __tablename__ = "findings"
-    __table_args__ = (UniqueConstraint("instance_id", "arr_id", "type"),)
+    # AUTOINCREMENT: ids of deleted findings are never handed out again, so an old
+    # ActionLog.finding_id can never point at an unrelated finding.
+    __table_args__ = (
+        UniqueConstraint("instance_id", "arr_id", "type"),
+        {"sqlite_autoincrement": True},
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     instance_id: Mapped[str]
     arr_id: Mapped[int]

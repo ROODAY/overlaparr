@@ -502,3 +502,23 @@ def test_offline_server_copies_rebuilt_from_cache_not_duplicated(db):
     run(db, [cf(copy("s2", stale=True))], scan_id=2, status={"s1": "online", "s2": "offline"})
     f = finding(db)
     assert [(c.server_id, c.stale) for c in copies(db, f)] == [("s2", True)]
+
+
+def test_purged_instance_findings_detach_action_log(db):
+    from overlaparr.db.models import ActionLog
+
+    track(db)
+    track(db, instance="old")
+    run(db, [cf(copy("s1")), cf(copy("s1"), instance="old")], ok={"radarr": True, "old": True},
+        conf={"radarr", "old"})
+    old, kept = finding(db, instance="old"), finding(db)
+    for f in (old, kept):
+        db.add(ActionLog(actor="ui", instance_id=f.instance_id, instance_name="I",
+                         finding_id=f.id, arr_id=1, item_title="Title snap",
+                         action="unmonitor", result="ok"))
+    db.commit()
+    run(db, [cf(copy("s1"))], scan_id=2, ok={"radarr": True})
+    db.expire_all()
+    rows = {r.instance_id: r for r in db.scalars(select(ActionLog))}
+    assert rows["old"].finding_id is None and rows["old"].item_title == "Title snap"
+    assert rows["radarr"].finding_id == kept.id

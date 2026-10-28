@@ -6,10 +6,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.orm import Session
 
 from overlaparr.db.models import (
+    ActionLog,
     Finding,
     FindingCopy,
     FindingServerIgnore,
@@ -54,10 +55,20 @@ def _summarize(f: Finding, copies: list[FindingCopy], ignored_servers: set[str])
     f.has_number_matches = any(c.matched_by == "number" for c in copies)
 
 
+def delete_findings(db: Session, *where: ColumnElement[bool]) -> None:
+    """Delete findings matching ``where`` (all when empty); nothing is committed.
+
+    FK cascades remove copies, server ignores and rule states. Action-log rows are
+    history and stay, detached (``finding_id=None``) with their title snapshot.
+    """
+    ids = select(Finding.id).where(*where)
+    db.execute(update(ActionLog).where(ActionLog.finding_id.in_(ids)).values(finding_id=None))
+    db.execute(delete(Finding).where(*where))
+
+
 def _purge_instances(db: Session, configured: set[str]) -> None:
     keep = list(configured)
-    # FK cascades remove copies, server ignores and rule states with the findings.
-    db.execute(delete(Finding).where(Finding.instance_id.not_in(keep)))
+    delete_findings(db, Finding.instance_id.not_in(keep))
     db.execute(delete(TrackedItem).where(TrackedItem.instance_id.not_in(keep)))
     db.execute(delete(TrackedEpisode).where(TrackedEpisode.instance_id.not_in(keep)))
 
