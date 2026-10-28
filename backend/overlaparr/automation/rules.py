@@ -18,7 +18,12 @@ class RuleMatch:
 
 
 def _qualifies(rule: Rule, finding: Finding, c: FindingCopy, ignored: set[str]) -> bool:
-    if c.stale or c.server_id in ignored:
+    return not c.stale and _relevant_copy(rule, finding, c, ignored)
+
+
+def _relevant_copy(rule: Rule, finding: Finding, c: FindingCopy, ignored: set[str]) -> bool:
+    """Every rule condition on a copy except freshness."""
+    if c.server_id in ignored:
         return False
     if rule.servers and c.server_id not in rule.servers:
         return False
@@ -30,6 +35,38 @@ def _qualifies(rule: Rule, finding: Finding, c: FindingCopy, ignored: set[str]) 
     return True
 
 
+def _applies(rule: Rule, finding: Finding) -> bool:
+    return not (
+        finding.lifecycle != "active"
+        or finding.review_state == "ignored"
+        or finding.automation_hold
+        or finding.type not in rule.finding_types
+        or (rule.instances and finding.instance_id not in rule.instances)
+    )
+
+
+def relied_on_copies(
+    rule: Rule,
+    finding: Finding,
+    copies: list[FindingCopy],
+    ignored_servers: set[str],
+    relevant_episode_ids: list[int],
+) -> list[FindingCopy]:
+    """Copies the rule would rely on if every server were live, stale ones included.
+
+    Used to pause wait counters: reconcile marks copies on unreachable servers stale,
+    and ``evaluate`` drops stale copies, so this must look at them before evaluation.
+    """
+    if not _applies(rule, finding):
+        return []
+    relevant = set(relevant_episode_ids)
+    return [
+        c for c in copies
+        if _relevant_copy(rule, finding, c, ignored_servers)
+        and (finding.kind == "movie" or c.episode_arr_id in relevant)
+    ]
+
+
 def evaluate(
     rule: Rule,
     finding: Finding,
@@ -37,13 +74,7 @@ def evaluate(
     ignored_servers: set[str],
     relevant_episode_ids: list[int],
 ) -> RuleMatch | None:
-    if (
-        finding.lifecycle != "active"
-        or finding.review_state == "ignored"
-        or finding.automation_hold
-        or finding.type not in rule.finding_types
-        or (rule.instances and finding.instance_id not in rule.instances)
-    ):
+    if not _applies(rule, finding):
         return None
     good = [c for c in copies if _qualifies(rule, finding, c, ignored_servers)]
 

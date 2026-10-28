@@ -26,7 +26,7 @@ from overlaparr.actions.executor import (
     find_instance,
 )
 from overlaparr.actions.borrowed import client_for as borrowed_client_for
-from overlaparr.automation.rules import RuleMatch, evaluate
+from overlaparr.automation.rules import RuleMatch, evaluate, relied_on_copies
 from overlaparr.config.schema import AppConfig, Rule
 from overlaparr.db.models import (
     ActionLog,
@@ -163,6 +163,20 @@ def _count(ctx: ScanContext, rule: Rule, m: RuleMatch, state: RuleState | None) 
     return state.consecutive_scans >= rule.wait_scans
 
 
+def _paused(ctx: ScanContext, rule: Rule, f: Finding, copies: list[FindingCopy],
+            ignored: set[str]) -> bool:
+    """True when a server the rule relies on for this finding was not live this scan.
+
+    Spec §14: such a scan pauses the wait counter. Decided on all copies, stale
+    included, because reconcile marks an unreachable server's copies stale and
+    ``evaluate`` would otherwise see "no match" and reset the counter.
+    """
+    return any(
+        c.stale or ctx.server_status.get(c.server_id) not in _LIVE
+        for c in relied_on_copies(rule, f, copies, ignored, list(f.relevant_episode_ids))
+    )
+
+
 def _guard_series(req: ActionRequest) -> None:
     """Automation must never touch series-level monitoring or remove a series."""
     if req.action in EPISODE_SCOPE_ACTIONS and req.scope != "episodes":
@@ -243,7 +257,8 @@ def _load(db: Session, findings: list[Finding]) -> tuple[dict, dict]:
     return copies, ignores
 
 
-def _run_rule(ctx: ScanContext, rule: Rule, preview: bool, written: list[ActionLog]) -> bool:
+def _run_rule(ctx: ScanContext, cfg: AppConfig, rule: Rule, preview: bool,
+              written: list[ActionLog]) -> bool:
     """Run one rule; False when it was skipped without evaluating anything.
 
     ``preview`` (a ``dry_run_next`` run) logs what the rule would do now, ignoring
@@ -264,8 +279,10 @@ def _run_rule(ctx: ScanContext, rule: Rule, preview: bool, written: list[ActionL
     )}
     client_for = _client_for(ctx)
     for f in findings:
-        m = evaluate(rule, f, copies[f.id], ignores[f.id], list(f.relevant_episode_ids))
         state = states.get(f.id)
+        if not preview and _paused(ctx, rule, f, copies[f.id], ignores[f.id]):
+            continue  # wait counter paused: no increment, no reset, no delete, no action
+        m = evaluate(rule, f, copies[f.id], ignores[f.id], list(f.relevant_episode_ids))
         if m is None:
             if state is not None and not preview:
                 db.delete(state)
@@ -279,7 +296,7 @@ def _run_rule(ctx: ScanContext, rule: Rule, preview: bool, written: list[ActionL
         req = _request(rule, f, m)
         if _already_done(db, f, req):
             continue
-        written.append(execute(db, ctx.config, req, "auto", rule=rule, scan_id=ctx.scan_id,
+        written.append(execute(db, cfg, req, "auto", rule=rule, scan_id=ctx.scan_id,
                                dry_run=dry_run, client_for=client_for))
     return True
 
@@ -299,6 +316,10 @@ def _consume_dry_run_flag(ctx: ScanContext, rule_id: str) -> None:
 def run_rules(ctx: ScanContext) -> list[ActionLog]:
     """Scan post-hook: hold detection, then every active rule in config order.
 
+    Rules come from the current config (not the scan-start snapshot): a rule disabled,
+    edited or deleted while the scan ran is honoured; one added meanwhile waits for
+    the next scan.
+
     Returns the ActionLog rows written (including dry-run rows). Never raises.
     """
     try:
@@ -310,12 +331,14 @@ def run_rules(ctx: ScanContext) -> list[ActionLog]:
                   redact(str(e)))
         return []
     written: list[ActionLog] = []
-    for rule in ctx.config.rules:
-        if not (rule.enabled or rule.dry_run_next):
+    cfg = ctx.store.current  # rules edited since the scan started take effect now
+    started_with = {r.id for r in ctx.config.rules}
+    for rule in cfg.rules:
+        if rule.id not in started_with or not (rule.enabled or rule.dry_run_next):
             continue
         preview = rule.dry_run_next and not ctx.dry_run
         try:
-            ran = _run_rule(ctx, rule, preview, written)  # rows land in written even on failure
+            ran = _run_rule(ctx, cfg, rule, preview, written)  # rows land in written even on failure
         except Exception as e:  # noqa: BLE001 - one broken rule must not stop the others
             ctx.db.rollback()
             log.error("scan %s: rule %s failed: %s", ctx.scan_id, rule.id, redact(str(e)))

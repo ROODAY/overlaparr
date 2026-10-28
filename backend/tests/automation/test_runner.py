@@ -138,18 +138,59 @@ def test_waits_two_scans(db, make_env):
     assert body(put) == {"movieIds": [1], "monitored": False}
 
 
+def set_stale(db, stale):
+    """What reconcile does: copies on a server that was not reachable are marked stale."""
+    for c in db.scalars(select(FindingCopy)):
+        c.stale = stale
+    db.commit()
+
+
 @respx.mock
 def test_offline_server_pauses_counter(db, make_env):
     env = make_env([rule(wait_scans=2)])
     movie_finding(db)
     put = mock_movie_unmonitor()
     env.run(1)
+    set_stale(db, True)
     assert env.run(2, status={"A": "offline"}) == []
-    assert state(db).consecutive_scans == 1
+    assert state(db).consecutive_scans == 1 and state(db).last_counted_scan_id == 1
     assert env.run(3, status={"A": "disabled"}) == []
     assert state(db).consecutive_scans == 1 and not put.called
+    set_stale(db, False)
     assert len(env.run(4)) == 1
     assert state(db).consecutive_scans == 2 and put.called
+
+
+@respx.mock
+def test_only_qualifying_server_offline_pauses_counter(db, make_env):
+    env = make_env([rule(wait_scans=3)])
+    f = movie_finding(db)  # qualifying copy on A
+    copy(db, f, server="B", quality="worse")  # B never qualifies for this rule
+    put = mock_movie_unmonitor()
+    env.run(1)
+    env.run(2)
+    assert state(db).consecutive_scans == 2
+    a = db.scalar(select(FindingCopy).where(FindingCopy.server_id == "A"))
+    a.stale = True
+    db.commit()
+    assert env.run(3, status={"A": "offline", "B": "online"}) == []
+    s = state(db)
+    assert s is not None and s.consecutive_scans == 2 and s.last_counted_scan_id == 2
+    a.stale = False
+    db.commit()
+    assert len(env.run(4)) == 1 and put.called
+    assert state(db).consecutive_scans == 3
+
+
+@respx.mock
+def test_stale_copy_on_live_server_pauses_counter(db, make_env):
+    env = make_env([rule(wait_scans=2)])
+    movie_finding(db)
+    put = mock_movie_unmonitor()
+    env.run(1)
+    set_stale(db, True)  # e.g. episodes could not be read from a live server
+    assert env.run(2) == []
+    assert state(db).consecutive_scans == 1 and not put.called
 
 
 @respx.mock
@@ -494,3 +535,47 @@ def test_unconfirmed_delete_keeps_dry_run_flag(db, make_env):
     movie_finding(db)
     assert env.run(1) == []
     assert env.store.current.rules[0].dry_run_next is True
+
+
+@respx.mock
+def test_rule_disabled_during_scan_does_not_act(db, make_env):
+    env = make_env([rule()])
+    movie_finding(db)
+    put = mock_movie_unmonitor()
+    ctx = env.ctx(1)  # scan started with the rule enabled
+
+    def disable(cfg):
+        cfg.rules[0].enabled = False
+
+    env.store.update(disable)
+    assert run_rules(ctx) == []
+    assert not put.called and logs(db) == []
+
+
+@respx.mock
+def test_rule_deleted_during_scan_does_not_act(db, make_env):
+    env = make_env([rule()])
+    movie_finding(db)
+    put = mock_movie_unmonitor()
+    ctx = env.ctx(1)
+
+    def drop(cfg):
+        cfg.rules = []
+
+    env.store.update(drop)
+    assert run_rules(ctx) == [] and not put.called
+
+
+@respx.mock
+def test_rule_added_during_scan_waits_for_next_scan(db, make_env):
+    env = make_env([])
+    movie_finding(db)
+    put = mock_movie_unmonitor()
+    ctx = env.ctx(1)
+
+    def add(cfg):
+        from overlaparr.config.schema import Rule
+        cfg.rules = [Rule(**rule())]
+
+    env.store.update(add)
+    assert run_rules(ctx) == [] and not put.called
