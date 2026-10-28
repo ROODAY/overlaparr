@@ -43,8 +43,18 @@ Everything lives in the `/config` volume:
 | `overlaparr.db` | SQLite runtime state: findings, activity, scan history. |
 | `logs/overlaparr.log` | JSON application log (rotated). |
 
-`config.yaml` is the source of truth and is safe to commit to version control.
-**Never commit `secrets.yaml`.**
+`config.yaml` is the source of truth and is safe to commit to version control
+(secrets are never written into it: webhook header values included).
+**Never commit `secrets.yaml`.** If you keep `/config` in git, ignore the items that must
+never be committed:
+
+```gitignore
+secrets.yaml
+*.db
+*.db-wal
+*.db-shm
+logs/
+```
 
 - Secrets are referenced from `config.yaml` as `!secret <key>`, pointing at a key in
   `secrets.yaml`.
@@ -90,6 +100,22 @@ or a `.env` file changes both. With plain `docker run`, set it with `-e` and map
 Overlaparr has a single user with a forms login. For scripting, send the API key in the
 `X-Api-Key` header; it is generated on first start as `app_api_key` in `secrets.yaml`.
 
+Two endpoints manage those credentials (both need authentication):
+
+- `POST /api/v1/auth/password` with `{"current_password": "...", "new_password": "..."}`
+  changes the password (at least 8 characters / at most 72 bytes). Every other signed-in
+  session is invalidated; the caller stays signed in. Only a session cookie may call it: the
+  API key and the local bypass get 403, so a leaked API key can't lock you out.
+- `POST /api/v1/auth/api-key/regenerate` returns `{"api_key": "..."}` with a fresh key,
+  shown only in that response and stored in `secrets.yaml`. The old key stops working at
+  once. No endpoint ever returns the current key.
+
+Browser cross-site writes are rejected: a `POST`/`PUT`/`PATCH`/`DELETE` to `/api/*` gets 403
+when the browser marks the request cross-site or its `Origin` does not match the requested
+host and port. Requests without an `Origin` (curl, scripts using `X-Api-Key`) are unaffected;
+if you call the API from a script through a browser-like client, do not send a foreign
+`Origin` header.
+
 > **Warning: "Disable login for local addresses" is unsafe behind Docker port mapping or a
 > reverse proxy.** In those setups every request reaches the app from a local address (the
 > Docker bridge or the proxy), so enabling this option turns authentication off for anyone who
@@ -113,7 +139,11 @@ a test message and records the result in the delivery history.
 
 Logs are JSON lines written to stdout (`docker logs overlaparr`) and to
 `/config/logs/overlaparr.log`. The level (default `INFO`) and rotation (size per file and
-number of backups) are set in **Settings**. Secrets are redacted from every log line. The
+number of backups) are set in **Settings**. Secrets Overlaparr knows about are redacted from
+log lines: every value stored in `secrets.yaml`, keyed fields (`api_key`, `apikey`, `token`,
+`password`, `secret=...`), `Authorization`/`Bearer` values, and Discord webhook tokens. Exact
+values shorter than 6 characters are not matched as standalone text, and a secret that reaches
+a message in an unrecognised shape can still appear, so treat the log as sensitive. The
 **Logs** page shows recent entries and lets you download the log file.
 
 ## Development
