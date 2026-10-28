@@ -3,38 +3,14 @@ import { api, ApiError } from "../../api/client";
 import { queryKeys } from "../../api/queryClient";
 import type { ActivityEntry } from "../../api/types";
 import { useToast } from "../../components/useToast";
+import {
+  actionLabel,
+  FILES_GONE,
+  isDeleteRow,
+  scopeText,
+  undoLabel,
+} from "../activity/labels";
 import { formatDateTime } from "../../lib/format";
-
-const ACTION_LABELS: Record<string, string> = {
-  unmonitor: "Unmonitor",
-  delete: "Delete",
-  exclude: "Add exclusion",
-  tag: "Tag",
-  ignore: "Ignore",
-  ignore_server: "Ignore server",
-  mark_reviewed: "Mark reviewed",
-  unignore: "Un-ignore",
-  mark_new: "Mark new",
-  quality_profile: "Set quality profile",
-  search: "Search",
-  clear_hold: "Clear automation hold",
-};
-
-function actionLabel(row: ActivityEntry): string {
-  const label = ACTION_LABELS[row.action] ?? row.action.replaceAll("_", " ");
-  return row.undo_of_id != null ? `Undo: ${label}` : label;
-}
-
-function scopeText(scope: Record<string, unknown>): string | null {
-  const parts = [];
-  if (Array.isArray(scope.episode_ids)) {
-    const n = scope.episode_ids.length;
-    parts.push(`${n} ${n === 1 ? "episode" : "episodes"}`);
-  }
-  if (scope.delete_mode === "remove_item") parts.push("removed from the app");
-  if (typeof scope.server_id === "string") parts.push(`server ${scope.server_id}`);
-  return parts.length ? parts.join(", ") : null;
-}
 
 /** The finding's action log, newest first, with per-row undo. */
 export function History({ rows }: { rows: ActivityEntry[] }) {
@@ -64,7 +40,7 @@ export function History({ rows }: { rows: ActivityEntry[] }) {
       {rows.map((row) => {
         const scope = scopeText(row.scope);
         // Deleted files never come back; undo of a delete only restores monitoring.
-        const isDelete = row.action === "delete" && row.undo_of_id == null;
+        const isDelete = isDeleteRow(row);
         return (
           <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
             <span className="text-slate-400">{formatDateTime(row.ts)}</span>
@@ -78,7 +54,7 @@ export function History({ rows }: { rows: ActivityEntry[] }) {
             ) : (
               row.message && <span className="text-slate-300">{row.message}</span>
             )}
-            {isDelete && <span className="font-medium text-red-300">Files cannot be restored</span>}
+            {isDelete && <span className="font-medium text-red-300">{FILES_GONE}</span>}
             {row.result === "dry_run" && <span className="text-amber-300">Dry run</span>}
             <span className="ml-auto">
               {row.undone_at ? (
@@ -90,7 +66,7 @@ export function History({ rows }: { rows: ActivityEntry[] }) {
                   onClick={() => undo.mutate(row)}
                   className="rounded border border-slate-600 px-2 py-0.5 text-slate-200 hover:bg-slate-700 disabled:opacity-50"
                 >
-                  {isDelete ? "Undo unmonitor" : "Undo"}
+                  {undoLabel(row)}
                 </button>
               ) : (
                 <span className="text-slate-500">Cannot be undone</span>

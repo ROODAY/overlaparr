@@ -14,6 +14,13 @@ import type {
 } from "../api/types";
 import { Badge, type BadgeVariant } from "../components/Badge";
 import { useToast } from "../components/useToast";
+import {
+  actionLabel,
+  FILES_GONE,
+  isDeleteRow,
+  scopeText,
+  undoLabel,
+} from "../features/activity/labels";
 import { formatDateTime } from "../lib/format";
 
 const PAGE_SIZE = 50;
@@ -108,12 +115,18 @@ export function Activity() {
   });
 
   const undo = useMutation({
-    mutationFn: (id: number) => api.post<ActivityEntry>(`/activity/${id}/undo`),
-    onSuccess: () => {
+    mutationFn: (row: ActivityEntry) => api.post<ActivityEntry>(`/activity/${row.id}/undo`),
+    onSuccess: (result, row) => {
       void queryClient.invalidateQueries({ queryKey: ["activity"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.findings });
       void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
-      toast("Action undone");
+      // A 200 row can still report the *arr call failed: only say "undone" for ok.
+      toast(
+        result.result === "ok"
+          ? `Undone: ${actionLabel(row)}`
+          : `Undo failed: ${result.message ?? "unknown error"}`,
+        result.result === "ok" ? "info" : "error",
+      );
     },
     onError: (e) => toast(`Could not undo: ${message(e)}`, "error"),
   });
@@ -204,43 +217,57 @@ export function Activity() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/60">
-                {activity.data.items.map((entry) => (
-                  <tr key={entry.id} className="align-middle">
-                    <td className="whitespace-nowrap px-3 py-2 text-slate-300">
-                      {formatDateTime(entry.ts)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Badge variant={ACTOR_VARIANT[entry.actor]}>{ACTOR_LABEL[entry.actor]}</Badge>
-                    </td>
-                    <td className="px-3 py-2 text-slate-200">{entry.action}</td>
-                    <td className="px-3 py-2 text-slate-100">{entry.item_title}</td>
-                    <td className="px-3 py-2 text-slate-300">{entry.instance_name}</td>
-                    <td className="px-3 py-2 text-slate-300">{entry.rule_name ?? "—"}</td>
-                    <td className="px-3 py-2">
-                      <Badge variant={RESULT_VARIANT[entry.result] ?? "neutral"}>
-                        {RESULT_LABEL[entry.result] ?? entry.result}
-                      </Badge>
-                    </td>
-                    <td className="px-3 py-2 text-slate-400">{entry.message}</td>
-                    <td className="whitespace-nowrap px-3 py-2">
-                      {entry.can_undo ? (
-                        <button
-                          type="button"
-                          aria-label={`Undo ${entry.action} for ${entry.item_title}`}
-                          disabled={undo.isPending}
-                          onClick={() => undo.mutate(entry.id)}
-                          className={SMALL_BUTTON}
-                        >
-                          Undo
-                        </button>
-                      ) : entry.undone_at ? (
-                        <span className="text-slate-400">Undone</span>
-                      ) : (
-                        <span className="text-slate-500">Cannot be undone</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {activity.data.items.map((entry) => {
+                  const scope = scopeText(entry.scope);
+                  const deleteRow = isDeleteRow(entry);
+                  return (
+                    <tr key={entry.id} className="align-middle">
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {formatDateTime(entry.ts)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Badge variant={ACTOR_VARIANT[entry.actor]}>{ACTOR_LABEL[entry.actor]}</Badge>
+                      </td>
+                      <td className="px-3 py-2 text-slate-200">
+                        {actionLabel(entry)}
+                        {scope && <span className="ml-1 text-slate-400">{scope}</span>}
+                      </td>
+                      <td className="px-3 py-2 text-slate-100">{entry.item_title}</td>
+                      <td className="px-3 py-2 text-slate-300">{entry.instance_name}</td>
+                      <td className="px-3 py-2 text-slate-300">{entry.rule_name ?? "—"}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={RESULT_VARIANT[entry.result] ?? "neutral"}>
+                          {RESULT_LABEL[entry.result] ?? entry.result}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2 text-slate-400">{entry.message}</td>
+                      <td className="whitespace-nowrap px-3 py-2">
+                        {entry.can_undo ? (
+                          <button
+                            type="button"
+                            aria-label={
+                              deleteRow
+                                ? `${undoLabel(entry)} for ${entry.item_title}`
+                                : `Undo ${entry.action} for ${entry.item_title}`
+                            }
+                            disabled={undo.isPending}
+                            onClick={() => undo.mutate(entry)}
+                            className={SMALL_BUTTON}
+                          >
+                            {undoLabel(entry)}
+                          </button>
+                        ) : entry.undone_at ? (
+                          <span className="text-slate-400">Undone</span>
+                        ) : (
+                          <span className="text-slate-500">Cannot be undone</span>
+                        )}
+                        {deleteRow && (
+                          <span className="block text-xs font-medium text-red-300">{FILES_GONE}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

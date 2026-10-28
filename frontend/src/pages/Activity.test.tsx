@@ -34,8 +34,27 @@ beforeEach(() => {
       undone_at: "2026-10-27T11:00:00Z",
       can_undo: false,
     }),
+    activityFixture({
+      id: 103,
+      item_title: "Sicario",
+      action: "delete",
+      scope: { delete_mode: "remove_item" },
+    }),
+    activityFixture({
+      id: 104,
+      item_title: "Rambo",
+      action: "unmonitor",
+      undo_of_id: 100,
+      can_undo: false,
+    }),
+    activityFixture({
+      id: 105,
+      item_title: "Severance",
+      action: "delete",
+      scope: { episode_ids: [201, 202, 203] },
+    }),
   ];
-  total = 3;
+  total = 6;
   queries = [];
   undos = [];
   server.use(
@@ -88,7 +107,48 @@ describe("Activity", () => {
     renderWithProviders(<Activity />, { route: "/activity" });
     await user.click(await screen.findByRole("button", { name: "Undo unmonitor for Heat" }));
     await waitFor(() => expect(undos).toEqual(["100"]));
-    expect(await screen.findByText("Action undone")).toBeInTheDocument();
+    expect(await screen.findByText("Undone: Unmonitor")).toBeInTheDocument();
+  });
+
+  it("reports a failed undo instead of claiming success", async () => {
+    server.use(
+      http.post("*/api/v1/activity/:id/undo", ({ params }) => {
+        undos.push(String(params.id));
+        const entry = entries.find((e) => String(e.id) === params.id)!;
+        return HttpResponse.json({
+          ...entry,
+          result: "error",
+          message: "Radarr returned 500",
+          can_undo: false,
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<Activity />, { route: "/activity" });
+    await user.click(await screen.findByRole("button", { name: "Undo unmonitor for Heat" }));
+    expect(await screen.findByText("Undo failed: Radarr returned 500")).toBeInTheDocument();
+    expect(screen.queryByText("Undone: Unmonitor")).not.toBeInTheDocument();
+  });
+
+  it("a delete row offers only the unmonitor undo and warns the files are gone", async () => {
+    renderWithProviders(<Activity />, { route: "/activity" });
+    await screen.findByRole("row", { name: /Sicario/ });
+    const sicario = row(/Sicario/);
+    expect(sicario.getByRole("button", { name: "Undo unmonitor for Sicario" })).toBeInTheDocument();
+    expect(sicario.getByText("Files cannot be restored")).toBeInTheDocument();
+    expect(sicario.getByText("removed from the app")).toBeInTheDocument();
+  });
+
+  it("labels a reversal row with an Undo: prefix", async () => {
+    renderWithProviders(<Activity />, { route: "/activity" });
+    await screen.findByRole("row", { name: /Rambo/ });
+    expect(row(/Rambo/).getByText("Undo: Unmonitor")).toBeInTheDocument();
+  });
+
+  it("shows the episode count of an episode-scoped row", async () => {
+    renderWithProviders(<Activity />, { route: "/activity" });
+    await screen.findByRole("row", { name: /Severance/ });
+    expect(row(/Severance/).getByText("3 episodes")).toBeInTheDocument();
   });
 
   it("filters send query params", async () => {
