@@ -142,6 +142,26 @@ describe("Findings", () => {
     expect(card).toHaveTextContent("The Wire");
   });
 
+  it("marks an automation hold in the table and poster views", async () => {
+    const held = [findingFixture({ automation_hold: true })];
+    server.use(http.get("*/api/v1/findings", () => HttpResponse.json({ items: held, total: 1 })));
+    const user = userEvent.setup();
+    renderFindings();
+    const table = await screen.findByRole("table");
+    const heldRow = within(table).getByRole("row", { name: /Heat/ });
+    expect(within(heldRow).getByText("Hold")).toHaveAttribute(
+      "title",
+      "Automation is paused for this item",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Posters" }));
+    const card = await screen.findByRole("article", { name: "Heat" });
+    expect(within(card).getByText("Hold")).toHaveAttribute(
+      "title",
+      "Automation is paused for this item",
+    );
+  });
+
   it("bulk delete opens confirm with bytes", async () => {
     const previews: ActionsBody[] = [];
     const runs: ActionsBody[] = [];
@@ -204,6 +224,76 @@ describe("Findings", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Bulk actions" })).not.toBeInTheDocument();
     await waitFor(() => expect(findingsQueries.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("does not reuse a cached delete preview", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post("*/api/v1/actions/preview", async () => {
+        calls += 1;
+        if (calls > 1) await gate;
+        return HttpResponse.json({
+          items: 1,
+          episodes: 0,
+          bytes: 1,
+          rejected: [],
+          per_finding: [{ finding_id: 1, episodes: 0 }],
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderFindings();
+    await screen.findByRole("table");
+    await user.click(screen.getByRole("checkbox", { name: "Select Heat" }));
+    await user.click(screen.getByRole("button", { name: "Delete…" }));
+    let dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText(/Deletes 1 item/)).toBeInTheDocument();
+
+    // Close and reopen for the same target: the old preview must not let Delete through.
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete…" }));
+    dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(calls).toBe(2));
+    expect(within(dialog).getByRole("button", { name: "Delete" })).toBeDisabled();
+
+    release();
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Delete" })).toBeEnabled(),
+    );
+  });
+
+  it("moves off a page that no longer exists", async () => {
+    let total = 51;
+    const runs: ActionsBody[] = [];
+    server.use(
+      http.get("*/api/v1/findings", ({ request }) => {
+        findingsQueries.push(new URL(request.url).searchParams);
+        return HttpResponse.json({ items: FINDINGS, total });
+      }),
+      http.post("*/api/v1/actions", async ({ request }) => {
+        runs.push((await request.json()) as ActionsBody);
+        return HttpResponse.json([logRow()]);
+      }),
+    );
+    const user = userEvent.setup();
+    renderFindings("/findings?page=2");
+    await screen.findByRole("table");
+    await waitFor(() => expect(findingsQueries.at(-1)!.get("page")).toBe("2"));
+
+    total = 2; // the action below shrinks the result to a single page
+    await user.click(screen.getByRole("checkbox", { name: "Select Heat" }));
+    const bar = screen.getByRole("region", { name: "Bulk actions" });
+    await user.click(within(bar).getByRole("button", { name: "Unmonitor" }));
+
+    await waitFor(() => expect(runs).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("page=2"));
+    expect(findingsQueries.at(-1)!.get("page")).toBeNull();
+    expect(screen.getByText("1–2 of 2")).toBeInTheDocument();
   });
 
   it("bulk delete sends only what the preview accepts", async () => {

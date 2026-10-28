@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
@@ -82,6 +82,18 @@ export function Findings() {
 
   const items = findings.data?.items ?? [];
   const total = findings.data?.total ?? 0;
+  const page = currentPage(params);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // A bulk action can shrink the result set below the page being viewed: move to the
+  // last page (at least 1) and update the URL so the next fetch agrees with the view.
+  useEffect(() => {
+    if (findings.data === undefined || page <= pages) return;
+    const next = new URLSearchParams(params);
+    if (pages > 1) next.set("page", String(pages));
+    else next.delete("page");
+    setParams(next, { replace: true });
+  }, [findings.data, page, pages, params, setParams]);
+
   const selectionProps = { selected, onToggle, onToggleAll };
   return (
     <div className="space-y-4">
@@ -112,7 +124,7 @@ export function Findings() {
         <FindingsCards items={items} total={total} {...selectionProps} />
       )}
       <Pager
-        page={currentPage(params)}
+        page={Math.min(page, pages)}
         total={total}
         onPage={(p) => update({ page: p > 1 ? String(p) : null })}
       />

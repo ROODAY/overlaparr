@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Finding, FindingSort, SortOrder } from "../../api/types";
+import { Badge } from "../../components/Badge";
 import { DiffBadges } from "../../components/DiffBadges";
 import { formatBytes } from "../../lib/format";
 import { ElsewhereChips, Poster, TypeLabel, Yours, type SelectionProps } from "./FindingParts";
@@ -71,6 +72,14 @@ export function FindingsTable({
                   {f.title}
                   {f.year != null && <span className="text-slate-400"> ({f.year})</span>}
                 </Link>
+                {f.automation_hold && (
+                  <>
+                    {" "}
+                    <Badge variant="caution" title="Automation is paused for this item">
+                      Hold
+                    </Badge>
+                  </>
+                )}
                 <div className="text-xs text-slate-400">{f.instance.name}</div>
               </td>
               <td className="px-3 py-2 whitespace-nowrap"><TypeLabel finding={f} /></td>

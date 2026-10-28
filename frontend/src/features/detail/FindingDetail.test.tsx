@@ -61,6 +61,8 @@ describe("FindingDetail", () => {
     const user = userEvent.setup();
     renderDetail();
     expect(await screen.findByText(/last successful check/)).toBeInTheDocument();
+    // The hold can come from an undo or from a change made in Sonarr/Radarr.
+    expect(screen.getByText(/changed outside an automatic action/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Clear automation hold" }));
     await waitFor(() => expect(holds).toEqual([{ hold: false }]));
     await waitFor(() =>

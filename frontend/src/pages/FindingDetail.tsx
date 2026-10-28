@@ -93,7 +93,8 @@ function HoldBanner({ id }: { id: number }) {
   return (
     <div className="flex flex-wrap items-center gap-3 rounded border border-amber-500/40 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">
       <span>
-        Automation is paused for this finding because one of its automatic actions was undone.
+        Automation is paused for this item because it was changed outside an automatic action (an
+        undo, or a change in Sonarr/Radarr). Rules will not act on it until you clear the hold.
       </span>
       <button
         type="button"

@@ -53,6 +53,10 @@ export function DeleteDialog({
   const preview = useQuery({
     queryKey: ["actions-preview", requests],
     queryFn: () => api.post<ActionPreview>("/actions/preview", { requests }),
+    // A preview is only valid for the moment it was asked: never show, or act on, a
+    // cached one when the dialog reopens or the delete mode changes.
+    staleTime: 0,
+    gcTime: 0,
   });
   const rejected = new Set((preview.data?.rejected ?? []).map((r) => r.index));
   const accepted = requests.filter((_, i) => !rejected.has(i));
@@ -118,7 +122,11 @@ export function DeleteDialog({
       confirmLabel="Delete"
       destructive
       confirmDisabled={
-        !preview.data || preview.data.items === 0 || accepted.length === 0 || nothing
+        preview.isFetching ||
+        !preview.data ||
+        preview.data.items === 0 ||
+        accepted.length === 0 ||
+        nothing
       }
       onConfirm={() => onConfirm(accepted)}
       onCancel={onCancel}

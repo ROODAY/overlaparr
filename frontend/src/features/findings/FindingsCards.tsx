@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Finding } from "../../api/types";
+import { Badge } from "../../components/Badge";
 import { DiffBadges } from "../../components/DiffBadges";
 import { formatBytes } from "../../lib/format";
 import { ElsewhereChips, Poster, TypeLabel, type SelectionProps } from "./FindingParts";
@@ -93,6 +94,11 @@ function Card({
         >
           {f.title}
         </Link>
+        {f.automation_hold && (
+          <Badge variant="caution" title="Automation is paused for this item">
+            Hold
+          </Badge>
+        )}
         <span className="text-slate-400">
           {f.year ?? "—"} · {f.instance.name} · <TypeLabel finding={f} />
         </span>
