@@ -188,6 +188,7 @@ def create_app(
     client_factory = client_factory or make_client
     bus = ProgressBus()
     scan_engine = ScanEngine(store, db_factory, gateway_factory, client_factory, bus)
+    scan_engine.fail_interrupted()  # a restart mid-scan leaves its run "running"
     for hook in (sync_tags, handle_losses, run_rules, dispatch_after_scan):
         scan_engine.register_post_hook(hook)
     scheduler = AppScheduler(store, scan_engine, db_factory)

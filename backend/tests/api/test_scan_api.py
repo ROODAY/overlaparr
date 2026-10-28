@@ -68,3 +68,21 @@ def test_sse_streams_events(authed):
             break
         time.sleep(0.05)
     assert bus._subscribers == []
+
+
+def test_startup_marks_interrupted_scans_failed(make_app):
+    from overlaparr.db.models import ScanRun
+
+    app = make_app()
+    with app.state.db_factory() as db:
+        db.add(ScanRun(status="running", trigger="schedule", summary={}))
+        db.add(ScanRun(status="ok", trigger="manual", summary={}))
+        db.commit()
+    app.state.db_engine.dispose()
+    app = make_app()  # restart
+    with app.state.db_factory() as db:
+        runs = {r.trigger: r for r in db.query(ScanRun)}
+    assert runs["schedule"].status == "failed" and runs["schedule"].error == "interrupted"
+    assert runs["schedule"].finished_at is not None
+    assert runs["manual"].status == "ok" and runs["manual"].error is None
+    app.state.db_engine.dispose()

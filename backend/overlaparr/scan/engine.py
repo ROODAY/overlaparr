@@ -82,6 +82,20 @@ class ScanEngine:
         """True while a scan is in progress."""
         return self._lock.locked()
 
+    def fail_interrupted(self) -> int:
+        """Close runs left ``running`` by a previous process (call once at startup)."""
+        if not self._lock.acquire(blocking=False):
+            return 0  # a scan of this process is running: its row is not stale
+        try:
+            with self.db_factory() as db:
+                runs = list(db.scalars(select(ScanRun).where(ScanRun.status == "running")))
+                for run in runs:
+                    run.status, run.error, run.finished_at = "failed", "interrupted", utcnow()
+                db.commit()
+                return len(runs)
+        finally:
+            self._lock.release()
+
     def register_post_hook(self, fn: PostHook) -> None:
         self._hooks.append(fn)
 
