@@ -92,7 +92,7 @@ def test_logging_reconfigured_on_change(authed):
     assert logging.getLogger().level == logging.WARNING
 
 
-def test_error_bodies_redacted(make_app):
+def test_error_bodies_redacted(make_app, tmp_path):
     secret = "super-secret-value-123"
     app = make_app()
 
@@ -108,10 +108,17 @@ def test_error_bodies_redacted(make_app):
     with TestClient(app) as c:  # the 500 is a response, not a re-raise
         r = c.get("/api/v1/boom-test")
         assert r.status_code == 500
+        # An unhandled error never tells the client anything about itself...
+        assert r.json() == {"detail": "Internal server error"}
         assert secret not in r.text and "abcdef123" not in r.text
-        assert "connection failed" in r.json()["detail"]
+        # ...while the redacted exception still reaches the log.
+        log_text = (tmp_path / "logs" / "overlaparr.log").read_text(encoding="utf-8")
+        assert "connection failed for ***" in log_text
+        assert secret not in log_text and "abcdef123" not in log_text
+        # An HTTPException detail is ours, so it is redacted and returned.
         r = c.get("/api/v1/http-test")
         assert r.status_code == 502 and secret not in r.text
+        assert r.json() == {"detail": "upstream said apikey=***"}
 
 
 def test_invalid_config_at_startup_keeps_running(make_app, tmp_path):

@@ -202,8 +202,7 @@ class _UnhandledErrors:
                       exc_info=exc)
             if started:
                 return  # response already under way; nothing more can be sent
-            response = JSONResponse({"detail": redact(str(exc)) or "Internal server error"},
-                                    status_code=500)
+            response = JSONResponse({"detail": "Internal server error"}, status_code=500)
             await response(scope, receive, send)
 
 
