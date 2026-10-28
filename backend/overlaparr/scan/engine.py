@@ -58,6 +58,8 @@ class ScanContext:
 
 
 PostHook = Callable[[ScanContext], None]
+# (session, current config, scan id, redacted error) for a scan that failed.
+FailureHook = Callable[[Session, AppConfig, int, str], None]
 
 
 class ScanEngine:
@@ -76,6 +78,7 @@ class ScanEngine:
         self.bus = bus or ProgressBus()
         self._lock = threading.Lock()
         self._hooks: list[PostHook] = []
+        self._failure_hooks: list[FailureHook] = []
 
     @property
     def running(self) -> bool:
@@ -98,6 +101,10 @@ class ScanEngine:
 
     def register_post_hook(self, fn: PostHook) -> None:
         self._hooks.append(fn)
+
+    def register_failure_hook(self, fn: FailureHook) -> None:
+        """Called after a scan failed (post-hooks do not run then); errors are swallowed."""
+        self._failure_hooks.append(fn)
 
     def start(self, trigger: Trigger, before: Callable[[], None] | None = None) -> int | None:
         """Start a scan in a daemon thread; None when one is already running.
@@ -172,6 +179,17 @@ class ScanEngine:
         finally:
             self.bus.publish({"scan_id": scan_id, "phase": "done", "detail": None, "done": 0,
                               "total": 0, "running": False, "status": status, "error": error})
+        if status == "failed":
+            self._run_failure_hooks(scan_id, error or "scan failed")
+
+    def _run_failure_hooks(self, scan_id: int, error: str) -> None:
+        for hook in self._failure_hooks:
+            try:
+                with self.db_factory() as db:
+                    hook(db, self.store.current, scan_id, error)
+            except Exception as e:  # noqa: BLE001 - must never escape the scan thread
+                log.error("scan %s failure hook failed: %s", scan_id,
+                          redact(str(e)) or type(e).__name__)
 
     # ----- pipeline ---------------------------------------------------
 

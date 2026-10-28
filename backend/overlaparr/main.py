@@ -42,7 +42,7 @@ from overlaparr.config.watcher import start_watching
 from overlaparr.db.session import init_db, make_engine, make_sessionmaker
 from overlaparr.logging_setup import configure_logging, install_secret_redaction, redact
 from overlaparr.loss import handle_losses
-from overlaparr.notify.events import dispatch_after_scan
+from overlaparr.notify.events import AppErrorNotifier, dispatch_after_scan, notify_scan_failed
 from overlaparr.plex.gateway import PlexApiGateway, PlexGateway
 from overlaparr.scan.engine import ScanEngine
 from overlaparr.scan.progress import ProgressBus
@@ -189,6 +189,11 @@ def create_app(
     bus = ProgressBus()
     scan_engine = ScanEngine(store, db_factory, gateway_factory, client_factory, bus)
     scan_engine.fail_interrupted()  # a restart mid-scan leaves its run "running"
+    scan_engine.register_failure_hook(notify_scan_failed)
+    app_errors = AppErrorNotifier(store, db_factory)
+    store.subscribe_errors(app_errors)
+    if store.error:  # invalid at startup: only deliverable once connections are known
+        app_errors(store.error)
     for hook in (sync_tags, handle_losses, run_rules, dispatch_after_scan):
         scan_engine.register_post_hook(hook)
     scheduler = AppScheduler(store, scan_engine, db_factory)

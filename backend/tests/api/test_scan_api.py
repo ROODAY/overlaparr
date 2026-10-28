@@ -86,3 +86,25 @@ def test_startup_marks_interrupted_scans_failed(make_app):
     assert runs["schedule"].finished_at is not None
     assert runs["manual"].status == "ok" and runs["manual"].error is None
     app.state.db_engine.dispose()
+
+
+def test_app_wires_scan_failed_and_app_error_notifications(make_app, tmp_path, monkeypatch):
+    from overlaparr.notify import channels
+
+    sent = []
+    monkeypatch.setattr(channels, "send", lambda c, m: sent.append((c.id, m.title)))
+    monkeypatch.setattr(channels.time, "sleep", lambda s: None)
+    conn = {"id": "w1", "name": "w1", "type": "webhook", "url": "https://x.test/w1",
+            "enabled": True, "events": {"scan_problems": True, "app_errors": True}}
+    (tmp_path / "config.yaml").write_text(json.dumps({"notifications": {"connections": [conn]}}),
+                                          encoding="utf-8")
+    app = make_app()
+    app.state.scan_engine.run_sync("manual")  # Plex not configured -> the scan fails
+    assert sent == [("w1", "Overlaparr: 1 scan problem")]
+    (tmp_path / "config.yaml").write_text("scan: {page_size: lots}\n", encoding="utf-8")
+    app.state.store.reload_from_disk()
+    deadline = time.monotonic() + 10
+    while len(sent) < 2 and time.monotonic() < deadline:  # delivered on a daemon thread
+        time.sleep(0.05)
+    assert sent[1] == ("w1", "Overlaparr: 1 error")
+    app.state.db_engine.dispose()

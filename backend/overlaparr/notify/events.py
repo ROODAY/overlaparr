@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from html import escape
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from overlaparr.config.schema import NotificationConnection
+from overlaparr.config.schema import AppConfig, NotificationConnection
 from overlaparr.db.models import (
     ActionLog,
     Finding,
@@ -23,6 +24,7 @@ from overlaparr.logging_setup import redact
 from overlaparr.notify.channels import Message, send_with_retry
 
 if TYPE_CHECKING:
+    from overlaparr.config.store import ConfigStore
     from overlaparr.scan.engine import ScanContext
 
 log = logging.getLogger(__name__)
@@ -146,6 +148,7 @@ def _lines(kind: str, events: list[PendingEvent]) -> tuple[str, list[str]]:
     if kind == "scan_problem":
         return (f"Scan problems ({len(events)})",
                 [f"{e.payload['kind']} {e.payload['name']}: {e.payload['status']}"
+                 + (f" ({e.payload['error']})" if e.payload.get("error") else "")
                  for e in events])
     return (f"Errors ({len(events)})",
             [str(e.payload.get("message") or e.payload) for e in events])
@@ -186,20 +189,29 @@ def build_message(events: list[PendingEvent], app_url: str | None = None) -> Mes
 # ----- dispatch ---------------------------------------------------------------
 
 
-def _send_all(ctx: ScanContext) -> None:
-    db = ctx.db
-    pending = list(db.scalars(
-        select(PendingEvent).where(PendingEvent.sent.is_(False)).order_by(PendingEvent.id)))
-    cfg = ctx.config.notifications
-    for conn in cfg.connections:
+def _deliver(db: Session, cfg: AppConfig, events: list[PendingEvent]) -> None:
+    """One batched message per enabled, subscribed connection (sending never raises)."""
+    notifications = cfg.notifications
+    for conn in notifications.connections:
         if not conn.enabled:
             continue
-        chosen = _select_for(conn, pending)
+        chosen = _select_for(conn, events)
         if chosen:
-            send_with_retry(db, conn, build_message(chosen, cfg.app_url), "batch")
+            send_with_retry(db, conn, build_message(chosen, notifications.app_url), "batch")
+
+
+def send_pending(db: Session, cfg: AppConfig) -> None:
+    """Deliver every unsent queued event, batched, and mark them sent."""
+    pending = list(db.scalars(
+        select(PendingEvent).where(PendingEvent.sent.is_(False)).order_by(PendingEvent.id)))
+    _deliver(db, cfg, pending)
     for e in pending:
         e.sent = True
     db.commit()
+
+
+def _send_all(ctx: ScanContext) -> None:
+    send_pending(ctx.db, ctx.config)
 
 
 def dispatch_after_scan(ctx: ScanContext) -> None:
@@ -218,3 +230,61 @@ def dispatch_after_scan(ctx: ScanContext) -> None:
             ctx.db.rollback()
         except Exception:  # noqa: BLE001
             pass
+
+
+def notify_scan_failed(db: Session, cfg: AppConfig, scan_id: int, error: str) -> None:
+    """Scan failure hook: queue a scan problem (error already redacted) and send.
+
+    Also delivers anything the failed scan had queued. Never raises.
+    """
+    try:
+        queue_event(db, "scan_problem", {"kind": "scan", "id": scan_id, "name": f"#{scan_id}",
+                                         "status": "failed", "error": redact(error)})
+        db.commit()
+        send_pending(db, cfg)
+    except Exception as e:  # noqa: BLE001 - notifications must never affect a scan
+        log.error("scan failure notification failed: %s", redact(str(e)) or type(e).__name__)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class AppErrorNotifier:
+    """Sends an ``app_error`` (e.g. invalid config.yaml) once per distinct message.
+
+    Registered with ``ConfigStore.subscribe_errors``; uses the running (last good)
+    config's connections. Delivery runs in a daemon thread by default so a slow
+    channel never delays a reload or startup. Never raises.
+    """
+
+    def __init__(self, store: ConfigStore, db_factory: sessionmaker[Session],
+                 background: bool = True) -> None:
+        self._store = store
+        self._db_factory = db_factory
+        self._background = background
+        self._seen: set[str] = set()
+        self._lock = threading.Lock()
+
+    def __call__(self, message: str) -> None:
+        with self._lock:
+            if message in self._seen:
+                return
+            self._seen.add(message)
+        if self._background:
+            threading.Thread(target=self._send, args=(message,), name="notify-app-error",
+                             daemon=True).start()
+        else:
+            self._send(message)
+
+    def _send(self, message: str) -> None:
+        try:
+            with self._db_factory() as db:
+                event = PendingEvent(kind="app_error", payload={"message": redact(message)},
+                                     sent=True)
+                db.add(event)
+                db.commit()
+                _deliver(db, self._store.current, [event])
+        except Exception as e:  # noqa: BLE001 - must never affect a reload
+            log.error("application error notification failed: %s",
+                      redact(str(e)) or type(e).__name__)

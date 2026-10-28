@@ -274,6 +274,7 @@ class ConfigStore:
         self._secrets = CommentedMap()
         self._known: tuple[str | None, str | None] = (None, None)
         self._subscribers: list[Callable[[AppConfig], None]] = []
+        self._error_subscribers: list[Callable[[str], None]] = []
 
     # ----- public API -------------------------------------------------
 
@@ -303,11 +304,14 @@ class ConfigStore:
                 log.error("config on disk is invalid: %s", e)
                 if self._current is None:
                     self._current = AppConfig()
-                return self._current
-            self._error = None
-            self._current = cfg
-            self._remember_disk()
-            return cfg
+                current, error = self._current, str(e)
+            else:
+                self._error = None
+                self._current = cfg
+                self._remember_disk()
+                return cfg
+        self._notify_error(error)  # outside the lock: subscribers may read the store
+        return current
 
     def reload_from_disk(self) -> bool:
         """Re-read the files if they changed since we last read/wrote them.
@@ -324,12 +328,17 @@ class ConfigStore:
                 self._error = str(e)
                 self._remember_disk()
                 log.warning("config on disk is invalid, keeping last good config: %s", e)
-                return False
-            self._error = None
-            self._remember_disk()
-            if cfg == self._current:
-                return False
-            self._current = cfg
+                error = str(e)
+            else:
+                error = None
+                self._error = None
+                self._remember_disk()
+                if cfg == self._current:
+                    return False
+                self._current = cfg
+        if error is not None:
+            self._notify_error(error)  # outside the lock: subscribers may read the store
+            return False
         self._notify(cfg)
         return True
 
@@ -410,11 +419,22 @@ class ConfigStore:
     def subscribe(self, cb: Callable[[AppConfig], None]) -> None:
         self._subscribers.append(cb)
 
+    def subscribe_errors(self, cb: Callable[[str], None]) -> None:
+        """``cb(message)`` whenever loading/reloading finds config.yaml invalid."""
+        self._error_subscribers.append(cb)
+
     def changed_on_disk(self) -> bool:
         """True if either file differs from what the store last read or wrote."""
         return (_digest(self.config_path), _digest(self.secrets_path)) != self._known
 
     # ----- internals --------------------------------------------------
+
+    def _notify_error(self, message: str) -> None:
+        for cb in list(self._error_subscribers):
+            try:
+                cb(message)
+            except Exception:
+                log.exception("config error subscriber failed")
 
     def _notify(self, cfg: AppConfig) -> None:
         for cb in list(self._subscribers):

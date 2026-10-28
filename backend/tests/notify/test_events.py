@@ -205,3 +205,95 @@ def test_notify_failure_does_not_fail_scan(tmp_path, monkeypatch):
         assert log.success is False
         assert all(e.sent for e in db.scalars(select(PendingEvent)))
     env.eng.dispose()
+
+
+# ----- scan failed / application errors -----------------------------------------
+
+
+def test_failed_scan_sends_scan_problem(tmp_path, sent):
+    from overlaparr.logging_setup import register_secret
+
+    register_secret("SECRET123")
+    env = te.Env(tmp_path)
+    env.configure(notifications={"connections": [conn("a", scan_problems=True),
+                                                 conn("b", new_findings=True)]})
+
+    def exploding(inst):
+        raise RuntimeError("GET http://radarr/api/v3/movie?apikey=SECRET123 failed")
+
+    env.client_factory = exploding
+    eng = env.engine()
+    eng.register_post_hook(dispatch_after_scan)
+    eng.register_failure_hook(events.notify_scan_failed)
+    run = env.run(eng)
+    assert run.status == "failed"
+    [(cid, msg)] = sent
+    assert cid == "a" and "scan problem" in msg.title
+    assert "failed" in msg.text and "SECRET123" not in msg.text + msg.title
+    assert "apikey" in msg.text  # the (redacted) error is included
+    with env.factory() as db:
+        assert all(e.sent for e in db.scalars(select(PendingEvent)))
+    env.eng.dispose()
+
+
+def test_failed_scan_notification_errors_never_escape(tmp_path, monkeypatch):
+    env = te.Env(tmp_path)
+    env.configure(notifications={"connections": [conn("a", scan_problems=True)]})
+    env.client_factory = lambda inst: (_ for _ in ()).throw(RuntimeError("boom"))
+
+    def broken(*a, **kw):
+        raise RuntimeError("notify broke")
+
+    monkeypatch.setattr(events, "send_pending", broken)
+    eng = env.engine()
+    eng.register_failure_hook(events.notify_scan_failed)
+    assert env.run(eng).status == "failed"
+    assert eng.running is False
+    env.eng.dispose()
+
+
+def _store(tmp_path, connections):
+    import json
+
+    from overlaparr.config.store import ConfigStore
+
+    path = tmp_path / "config.yaml"
+    path.write_text(json.dumps({"notifications": {"connections": connections}}),
+                    encoding="utf-8")
+    store = ConfigStore(path, tmp_path / "secrets.yaml")
+    store.load()
+    return store, path
+
+
+def test_invalid_config_sends_app_error_once_per_distinct_error(tmp_path, db, sent):
+    store, path = _store(tmp_path, [conn("a", app_errors=True), conn("b", scan_problems=True)])
+    factory = make_sessionmaker(db.get_bind())
+    notifier = events.AppErrorNotifier(store, factory, background=False)
+    store.subscribe_errors(notifier)
+
+    path.write_text("scan: {page_size: lots}\n", encoding="utf-8")
+    assert store.reload_from_disk() is False and store.error
+    path.write_text("scan: {page_size: 'lots'}  # same problem\n", encoding="utf-8")
+    store.reload_from_disk()
+    assert [c for c, _ in sent] == ["a"]
+    assert "page_size" in sent[0][1].text and "error" in sent[0][1].title
+    path.write_text("scan: {stale_after_hours: -1}\n", encoding="utf-8")
+    store.reload_from_disk()
+    assert [c for c, _ in sent] == ["a", "a"]
+    db.expire_all()
+    kinds = [e.kind for e in db.scalars(select(PendingEvent))]
+    assert kinds == ["app_error", "app_error"]
+
+
+def test_app_error_notifier_never_raises(tmp_path, db, monkeypatch):
+    store, path = _store(tmp_path, [conn("a", app_errors=True)])
+    factory = make_sessionmaker(db.get_bind())
+
+    def broken(*a, **kw):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(events, "_deliver", broken)
+    store.subscribe_errors(events.AppErrorNotifier(store, factory, background=False))
+    path.write_text("scan: {page_size: lots}\n", encoding="utf-8")
+    assert store.reload_from_disk() is False  # the reload itself is unaffected
+    assert store.error
