@@ -138,11 +138,17 @@ def _dedupe_items(server_id: str, rows: Iterable[PlexItemRow]) -> tuple[list[Ind
     groups: list[list[IndexItem]] = []
     by_key: dict[tuple[str, str, object], int] = {}
     for row in rows:
-        ids = parse_guids(row.guids)
+        try:
+            ids = parse_guids(row.guids)
+            res = parse_plex_resolution(row.resolution) if row.kind == "movie" else None
+        except Exception as exc:  # noqa: BLE001 - one bad item must not abort the index
+            log.warning("server %s: skipping unreadable item %s (%s)", server_id,
+                        getattr(row, "rating_key", "?"), type(exc).__name__)
+            unmatchable += 1
+            continue
         if ids.is_empty:
             unmatchable += 1
             continue
-        res = parse_plex_resolution(row.resolution) if row.kind == "movie" else None
         item = IndexItem(
             server_id=server_id, kind=row.kind, rating_key=row.rating_key, title=row.title,
             year=row.year, tmdb=ids.tmdb, tvdb=ids.tvdb, imdb=ids.imdb,

@@ -199,6 +199,24 @@ def test_duplicate_across_libraries_keeps_best(factory):
     assert rows[0].tmdb == 7 and rows[0].imdb == "tt7"
 
 
+def test_one_bad_item_never_aborts_a_server_index(factory, monkeypatch):
+    from overlaparr.plex import indexer
+
+    servers = add_servers(factory, "a")
+    gw = FakePlexGateway({"a": {"items": [movie(1, 1), movie(2, 2), movie(3, 3)]}})
+    real = indexer.parse_guids
+
+    def flaky(guids):
+        if "tmdb://2" in guids:
+            raise ValueError("bad guid")
+        return real(guids)
+
+    monkeypatch.setattr(indexer, "parse_guids", flaky)
+    r = run(factory, gw, servers)["id-a"]
+    assert r.status == "online" and r.items == 2
+    assert sorted(i.rating_key for i in items_of(factory, "id-a")) == ["1", "3"]
+
+
 def test_unmatchable_counted(factory):
     servers = add_servers(factory, "a")
     gw = FakePlexGateway({"a": {"items": [

@@ -19,21 +19,23 @@ class ExternalIds:
 
 
 _GUID = re.compile(r"^(tmdb|tvdb|imdb)://(.+)$")
-_IMDB = re.compile(r"^tt\d+$")
+_IMDB = re.compile(r"^tt[0-9]+$")
 
 
 def parse_guids(guids: Iterable[str]) -> ExternalIds:
     tmdb = tvdb = None
     imdb = None
     for guid in guids:
-        m = _GUID.match(guid or "")
+        if not isinstance(guid, str):
+            continue
+        m = _GUID.match(guid)
         if not m:
             continue
         scheme, value = m.groups()
         if scheme == "imdb":
             if _IMDB.match(value):
                 imdb = value
-        elif value.isdigit():
+        elif value.isascii() and value.isdigit():  # "²".isdigit() is True; int() rejects it
             if scheme == "tmdb":
                 tmdb = int(value)
             else:

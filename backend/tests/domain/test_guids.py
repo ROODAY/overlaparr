@@ -13,3 +13,13 @@ def test_parse_guids_ignores_legacy_and_malformed():
 
 def test_parse_all():
     assert parse_guids(["tvdb://456", "tmdb://1"]) == ExternalIds(1, 456, None)
+
+
+def test_parse_guids_non_ascii_digits_ignored():
+    # "²" and Arabic-Indic digits pass str.isdigit() but int() rejects or misreads them
+    ids = parse_guids(["tmdb://²", "tvdb://١٢٣", "imdb://tt١٢", "tmdb://603"])
+    assert ids == ExternalIds(603, None, None)
+
+
+def test_parse_guids_skips_non_string_entries():
+    assert parse_guids([None, 5, "tvdb://7"]) == ExternalIds(None, 7, None)
