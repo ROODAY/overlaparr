@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { queryKeys } from "../api/queryClient";
-import type { RuleIn, RuleWithRun } from "../api/types";
+import type { Rule, RuleIn, RuleWithRun } from "../api/types";
 import { Switch } from "../components/Switch";
 import { useToast } from "../components/useToast";
 import { DryRunButton } from "../features/rules/DryRunButton";
@@ -21,8 +21,7 @@ export function Automation() {
   });
 
   const setEnabled = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: RuleIn }) =>
-      api.patch<RuleWithRun>(`/rules/${id}`, body),
+    mutationFn: ({ id, body }: { id: string; body: RuleIn }) => api.patch<Rule>(`/rules/${id}`, body),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.rules }),
     onError: (e) =>
       toast(
@@ -32,8 +31,17 @@ export function Automation() {
   });
 
   const reorder = useMutation({
-    mutationFn: (ids: string[]) => api.post<RuleWithRun[]>("/rules/reorder", { ids }),
-    onSuccess: (data) => queryClient.setQueryData(queryKeys.rules, data),
+    mutationFn: (ids: string[]) => api.post<Rule[]>("/rules/reorder", { ids }),
+    // Reorder returns plain rules (no last_run/last_affected): keep the cached run
+    // fields and only take the new order.
+    onSuccess: (data) =>
+      queryClient.setQueryData<RuleWithRun[]>(queryKeys.rules, (old) => {
+        if (!old) return old;
+        const byId = new Map(old.map((rule) => [rule.id, rule]));
+        return data.map(
+          (rule) => byId.get(rule.id) ?? { ...rule, last_run: null, last_affected: 0 },
+        );
+      }),
     onError: (e) =>
       toast(
         `Could not reorder: ${e instanceof ApiError ? e.detail : "could not reach Overlaparr"}`,
@@ -110,7 +118,7 @@ export function Automation() {
                   </td>
                   <td className="px-3 py-2">
                     <Switch
-                      label="Enabled"
+                      label={`Enable ${rule.name}`}
                       checked={rule.enabled}
                       disabled={setEnabled.isPending}
                       onChange={(enabled) => toggle(rule, enabled)}

@@ -122,6 +122,7 @@ describe("RuleEditor", () => {
     await user.click(screen.getByRole("button", { name: "Save rule" }));
     await waitFor(() => expect(created).toHaveLength(1));
     expect(created[0]).toMatchObject({ name: "Safe rule", enabled: false, delete_confirmed: false });
+    expect(created[0]).not.toHaveProperty("dry_run_next");
     // Saving a disabled rule needs no warning.
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/automation$/));
@@ -158,6 +159,7 @@ describe("RuleEditor", () => {
       enabled: true,
       delete_confirmed: true,
     });
+    expect(created[0]).not.toHaveProperty("dry_run_next");
   });
 
   it("warns before enabling a non-delete rule without asking for DELETE", async () => {
@@ -191,6 +193,87 @@ describe("RuleEditor", () => {
     ).toBeInTheDocument();
     expect(previews.length).toBe(before + 1);
     expect(previews.at(-1)!.rule.quality).toEqual(["better", "same", "worse"]);
+  });
+
+  it("does not re-preview for the name/enabled and keeps the count's own verb", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    expect(await screen.findByText("Would unmonitor 2 items now")).toBeInTheDocument();
+
+    const before = previews.length;
+    await user.type(screen.getByLabelText("Name"), "Renamed");
+    await user.click(screen.getByRole("switch", { name: "Enabled" }));
+    // Neither field takes part in matching, so no request (not even after the debounce).
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(previews.length).toBe(before);
+
+    // The count for the old conditions keeps its own verb while the new one loads.
+    await user.click(group("Action").getByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Would unmonitor 2 items now")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Would delete files of 2 items now", {}, { timeout: 2000 }),
+    ).toBeInTheDocument();
+    expect(previews.at(-1)!.rule.name).toBe("Preview");
+  });
+
+  it("shows an error when the preview fails", async () => {
+    server.use(
+      http.post("*/api/v1/rules/preview", () =>
+        HttpResponse.json({ detail: "Could not read findings" }, { status: 422 }),
+      ),
+    );
+    renderEditor();
+    expect(
+      await screen.findByText("Preview failed: Could not read findings", {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
+  });
+
+  it("says when instances could not be loaded and retries", async () => {
+    let attempts = 0;
+    server.use(
+      http.get("*/api/v1/instances", () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: "Plex is not connected" }, { status: 409 })
+          : HttpResponse.json([instanceFixture()]);
+      }),
+    );
+    const user = userEvent.setup();
+    renderEditor();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load instances");
+    expect(alert).toHaveTextContent("Plex is not connected");
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await group("Instances").findByRole("button", { name: "Sonarr" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("names every source that could not be loaded and retries them", async () => {
+    let instanceAttempts = 0;
+    let dashboardAttempts = 0;
+    server.use(
+      http.get("*/api/v1/instances", () => {
+        instanceAttempts += 1;
+        return instanceAttempts === 1
+          ? HttpResponse.json({ detail: "Plex is not connected" }, { status: 409 })
+          : HttpResponse.json([instanceFixture()]);
+      }),
+      http.get("*/api/v1/dashboard", () => {
+        dashboardAttempts += 1;
+        return dashboardAttempts === 1
+          ? HttpResponse.json({ detail: "Could not read servers" }, { status: 409 })
+          : HttpResponse.json(dashboardFixture());
+      }),
+    );
+    const user = userEvent.setup();
+    renderEditor();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load instances and servers");
+    expect(alert).toHaveTextContent("Plex is not connected; Could not read servers");
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await group("Instances").findByRole("button", { name: "Sonarr" })).toBeInTheDocument();
+    expect(await group("Servers").findByRole("button", { name: "Alpha" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows the backend rejection", async () => {

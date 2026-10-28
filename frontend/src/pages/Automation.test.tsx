@@ -52,7 +52,8 @@ beforeEach(() => {
       const { ids } = (await request.json()) as { ids: string[] };
       reorders.push(ids);
       rules = ids.map((id) => rules.find((r) => r.id === id)!);
-      return HttpResponse.json(rules);
+      // The real endpoint returns plain rules: last_run/last_affected are list-only.
+      return HttpResponse.json(rules.map(({ last_run: _r, last_affected: _a, ...rule }) => rule));
     }),
     http.post("*/api/v1/rules/:id/dry-run", ({ params }) => {
       dryRuns.push(String(params.id));
@@ -82,20 +83,20 @@ describe("Automation", () => {
     renderWithProviders(<Automation />, { route: "/automation" });
     await screen.findByRole("link", { name: "Unmonitor wanted" });
 
-    await user.click(row("Unmonitor wanted").getByRole("switch", { name: "Enabled" }));
+    await user.click(row("Unmonitor wanted").getByRole("switch", { name: "Enable Unmonitor wanted" }));
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Warning for unmonitor.")).toBeInTheDocument();
     expect(patches).toHaveLength(0);
     await user.click(within(dialog).getByRole("button", { name: "Enable" }));
     await waitFor(() => expect(patches).toEqual([{ id: "r-1", body: { enabled: true } }]));
     await waitFor(() =>
-      expect(row("Unmonitor wanted").getByRole("switch", { name: "Enabled" })).toHaveAttribute(
+      expect(row("Unmonitor wanted").getByRole("switch", { name: "Enable Unmonitor wanted" })).toHaveAttribute(
         "aria-checked",
         "true",
       ),
     );
 
-    await user.click(row("Delete on disk").getByRole("switch", { name: "Enabled" }));
+    await user.click(row("Delete on disk").getByRole("switch", { name: "Enable Delete on disk" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(patches.at(-1)).toEqual({ id: "r-2", body: { enabled: false } }));
   });
@@ -104,7 +105,7 @@ describe("Automation", () => {
     const user = userEvent.setup();
     renderWithProviders(<Automation />, { route: "/automation" });
     await screen.findByRole("link", { name: "Purge" });
-    await user.click(row("Purge").getByRole("switch", { name: "Enabled" }));
+    await user.click(row("Purge").getByRole("switch", { name: "Enable Purge" }));
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Warning for delete.")).toBeInTheDocument();
     const confirm = within(dialog).getByRole("button", { name: "Enable" });
@@ -131,6 +132,33 @@ describe("Automation", () => {
         "Unmonitor wanted",
         "Purge",
       ]),
+    );
+    // The reorder response carries no run fields; the cached ones must survive.
+    expect(row("Delete on disk").getByText("7")).toBeInTheDocument();
+    expect(row("Delete on disk").queryByText("Never")).not.toBeInTheDocument();
+    expect(row("Delete on disk").getByText(/ago|yesterday|second|minute/)).toBeInTheDocument();
+  });
+
+  it("keeps the switch off and toasts when enabling fails", async () => {
+    server.use(
+      http.patch("*/api/v1/rules/:id", () =>
+        HttpResponse.json({ detail: 'Delete rules require confirmation' }, { status: 422 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<Automation />, { route: "/automation" });
+    await screen.findByRole("link", { name: "Unmonitor wanted" });
+    await user.click(row("Unmonitor wanted").getByRole("switch", { name: "Enable Unmonitor wanted" }));
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Enable" }),
+    );
+    expect(
+      await screen.findByText("Could not update the rule: Delete rules require confirmation"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        row("Unmonitor wanted").getByRole("switch", { name: "Enable Unmonitor wanted" }),
+      ).toHaveAttribute("aria-checked", "false"),
     );
   });
 

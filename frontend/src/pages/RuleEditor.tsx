@@ -84,10 +84,20 @@ function EditorForm({ original }: { original?: Rule }) {
   });
 
   const patch = (changes: Partial<RuleDraft>) => setDraft((d) => ({ ...d, ...changes }));
-  // An enabled delete rule only reaches here once DELETE was typed, now or before.
-  const submit = () =>
-    save.mutate({ ...draft, delete_confirmed: draft.action === "delete" && draft.enabled });
+  const submit = () => {
+    // dry_run_next is server-owned (the scan clears it); only the Dry run button sets it.
+    const { dry_run_next: _ignored, ...fields } = draft;
+    // An enabled delete rule only reaches here once DELETE was typed, now or before.
+    save.mutate({ ...fields, delete_confirmed: draft.action === "delete" && draft.enabled });
+  };
   const nameMissing = draft.name.trim() === "";
+  const loadError = instances.isError || dashboard.isError;
+  const missing = [
+    instances.isError ? "instances" : "",
+    dashboard.isError ? "servers" : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
 
   return (
     <div className="max-w-3xl">
@@ -127,6 +137,30 @@ function EditorForm({ original }: { original?: Rule }) {
             />
           </span>
         </div>
+        {loadError && (
+          <div
+            role="alert"
+            className="mt-3 flex flex-wrap items-center gap-3 rounded border border-red-500/40 bg-red-950/40 px-3 py-2 text-sm text-red-200"
+          >
+            <span>
+              Could not load {missing}, so some choices are missing:{" "}
+              {[instances.error, dashboard.error]
+                .filter((e) => e instanceof ApiError)
+                .map((e) => (e as ApiError).detail)
+                .join("; ") || "could not reach Overlaparr"}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (instances.isError) void instances.refetch();
+                if (dashboard.isError) void dashboard.refetch();
+              }}
+              className="rounded border border-red-400/50 px-3 py-1 text-red-100 hover:bg-red-900/50"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <RuleForm
           draft={draft}
           onChange={patch}
