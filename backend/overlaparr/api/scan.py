@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from overlaparr.api.deps import get_db, get_engine
 from overlaparr.db.models import ScanRun
+from overlaparr.notify.events import FAILURE_NOTIFIED
 from overlaparr.scan.engine import ScanEngine
 from overlaparr.scan.progress import ProgressBus
 
@@ -33,7 +34,7 @@ def run_dict(run: ScanRun) -> dict:
         "status": run.status,
         "trigger": run.trigger,
         "error": run.error,
-        "summary": run.summary,
+        "summary": {k: v for k, v in (run.summary or {}).items() if k != FAILURE_NOTIFIED},
     }
 
 

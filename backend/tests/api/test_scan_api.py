@@ -108,3 +108,14 @@ def test_app_wires_scan_failed_and_app_error_notifications(make_app, tmp_path, m
         time.sleep(0.05)
     assert sent[1] == ("w1", "Overlaparr: 1 error")
     app.state.db_engine.dispose()
+
+
+def test_failure_dedupe_marker_is_not_exposed(authed):
+    from overlaparr.notify.events import FAILURE_NOTIFIED
+
+    with authed.app.state.db_factory() as db:
+        db.add(ScanRun(status="failed", trigger="schedule", error="boom",
+                       summary={FAILURE_NOTIFIED: "boom", "counts": {"lost": 0}}))
+        db.commit()
+    run = authed.get("/api/v1/scan/status").json()["runs"][0]
+    assert run["error"] == "boom" and run["summary"] == {"counts": {"lost": 0}}
