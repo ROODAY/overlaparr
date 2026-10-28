@@ -8,9 +8,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -88,7 +88,9 @@ def _redact_detail(detail: Any) -> Any:
 
 def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
-    async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        if exc.status_code == 404 and (page := _spa_page(request)) is not None:
+            return FileResponse(page)
         return JSONResponse({"detail": _redact_detail(exc.detail)}, status_code=exc.status_code,
                             headers=getattr(exc, "headers", None))
 
@@ -137,23 +139,33 @@ class _UnhandledErrors:
             await response(scope, receive, send)
 
 
-def _mount_spa(app: FastAPI) -> None:
-    """Serve the built frontend with history fallback; skipped when it isn't built."""
+def _spa_page(request: Request) -> Path | None:
+    """The built-frontend file answering an unmatched request, or None for a JSON 404.
+
+    Serving the SPA from the 404 path (rather than a catch-all route) means it
+    never shadows a route, including ones registered after ``create_app``.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return None
+    path = request.url.path.lstrip("/")
+    first = path.split("/", 1)[0]
+    if path == "health" or first in ("api", "assets"):
+        return None
     root = STATIC_DIR.resolve()
     index = root / "index.html"
     if not index.is_file():
-        return
-    if (root / "assets").is_dir():
-        app.mount("/assets", StaticFiles(directory=root / "assets"), name="assets")
+        return None
+    candidate = (root / path).resolve()
+    if path and candidate.is_file() and candidate.is_relative_to(root):
+        return candidate
+    return index
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def spa(full_path: str) -> FileResponse:
-        if full_path == "health" or full_path == "api" or full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="Not Found")
-        candidate = (root / full_path).resolve()
-        if full_path and candidate.is_file() and candidate.is_relative_to(root):
-            return FileResponse(candidate)
-        return FileResponse(index)
+
+def _mount_spa(app: FastAPI) -> None:
+    """Serve built frontend assets; pages are served by the 404 handler (``_spa_page``)."""
+    assets = STATIC_DIR.resolve() / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
 
 def create_app(
