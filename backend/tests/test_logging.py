@@ -175,3 +175,26 @@ def test_bad_log_args_do_not_raise(tmp_path):
     _flush()
     text = path.read_text()
     assert "secret999" not in text
+
+
+@pytest.mark.parametrize(
+    "text,secret",
+    [
+        ("Authorization: Bearer bbbb5555", "bbbb5555"),
+        ("authorization: bearer bbbb5555.x-y_z", "bbbb5555.x-y_z"),
+        ("sent Bearer cccc6666 to the hook", "cccc6666"),
+        ('{"Authorization": "Bearer dddd7777"}', "dddd7777"),
+        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("secret=ssss8888", "ssss8888"),
+        ("client_secret: ssss9999", "ssss9999"),
+        ('{"secret": "ssss0000"}', "ssss0000"),
+    ],
+)
+def test_redacts_bearer_authorization_and_secret(text, secret):
+    out = redact(text)
+    assert secret not in out
+    assert "***" in out
+
+
+def test_bearer_redaction_keeps_the_scheme():
+    assert redact("Authorization: Bearer abc12345") == "Authorization: Bearer ***"

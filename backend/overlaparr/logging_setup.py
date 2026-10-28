@@ -18,12 +18,21 @@ if TYPE_CHECKING:
 REPLACEMENT = "***"
 MIN_SECRET_LEN = 6
 
+# ``secret`` matches client_secret, secret_key, ... but not "secrets.yaml".
 _KEYED_RE = re.compile(
-    r"(?P<key>X-Plex-Token|X-Api-Key|apikey|api_key|token|password)"
+    r"(?P<key>X-Plex-Token|X-Api-Key|apikey|api_key|token|password|secret)(?![A-Za-z0-9_])"
     r"(?P<sep>[\"']?\s*[=:]\s*[\"']?)"
     r"(?P<val>[^\s&\"',;]+)",
     re.IGNORECASE,
 )
+# An Authorization value keeps its scheme so the log still says how it authenticated.
+_AUTH_RE = re.compile(
+    r"(?P<key>Authorization)(?P<sep>[\"']?\s*[=:]\s*[\"']?)"
+    r"(?P<scheme>Bearer|Basic|Token)?\s*(?P<val>[^\s&\"',;]+)",
+    re.IGNORECASE,
+)
+# A bare ``Bearer <token>`` anywhere (e.g. an error message echoing the header).
+_BEARER_RE = re.compile(r"(?P<key>Bearer)(?P<sep>\s+)(?P<val>[^\s&\"',;]+)", re.IGNORECASE)
 _WEBHOOK_RE = re.compile(r"/api/webhooks/\d+/[\w-]+")
 
 _SECRETS: set[str] = set()
@@ -39,6 +48,13 @@ def register_secret(value: str) -> None:
 
 def redact(text: str) -> str:
     text = _WEBHOOK_RE.sub(f"/api/webhooks/{REPLACEMENT}", text)
+
+    def auth(m: re.Match) -> str:
+        scheme = f"{m['scheme']} " if m["scheme"] else ""
+        return f"{m['key']}{m['sep']}{scheme}{REPLACEMENT}"
+
+    text = _AUTH_RE.sub(auth, text)
+    text = _BEARER_RE.sub(lambda m: f"{m['key']}{m['sep']}{REPLACEMENT}", text)
     text = _KEYED_RE.sub(lambda m: f"{m['key']}{m['sep']}{REPLACEMENT}", text)
     with _lock:
         secrets = sorted(_SECRETS, key=len, reverse=True)
