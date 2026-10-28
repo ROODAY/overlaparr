@@ -15,6 +15,7 @@ import type { Me, SetupStatus } from "./api/types";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import { Dashboard } from "./pages/Dashboard";
+import { FindingDetail } from "./pages/FindingDetail";
 import { Findings } from "./pages/Findings";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
@@ -80,7 +81,7 @@ function AppRoutes() {
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="findings" element={<Findings />} />
-          <Route path="findings/:id" element={<Placeholder name="Findings" />} />
+          <Route path="findings/:id" element={<FindingDetail />} />
           <Route path="automation" element={<Placeholder name="Automation" />} />
           <Route path="automation/:id" element={<Placeholder name="Automation" />} />
           <Route path="activity" element={<Placeholder name="Activity log" />} />

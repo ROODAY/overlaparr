@@ -75,8 +75,8 @@ describe("App routing", () => {
 
   it("renders the page for nested routes", async () => {
     server.use(status(false), authenticated, dashboard());
-    renderAt("/findings/12");
-    expect(await screen.findByText("Findings — coming soon")).toBeInTheDocument();
+    renderAt("/automation/12");
+    expect(await screen.findByText("Automation — coming soon")).toBeInTheDocument();
   });
 
   it("shows a banner when the config on disk is invalid", async () => {

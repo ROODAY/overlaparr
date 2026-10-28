@@ -476,10 +476,20 @@ export interface ActionsBody {
   confirm?: boolean;
 }
 
+/** A request the preview (and execute) would reject; index is its position in requests. */
+export interface RejectedRequest {
+  index: number;
+  finding_id: number;
+  reason: string;
+}
+
 export interface ActionPreview {
   items: number;
   episodes: number;
   bytes: number;
+  rejected: RejectedRequest[];
+  /** Episodes each accepted finding contributes (0 for movies), in request order. */
+  per_finding: { finding_id: number; episodes: number }[];
 }
 
 // ---------- Activity ----------

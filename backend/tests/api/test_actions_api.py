@@ -104,7 +104,25 @@ def test_bulk_actions(env):
 def _preview(c, *requests):
     r = c.post("/api/v1/actions/preview", json={"requests": list(requests)})
     assert r.status_code == 200, r.text
-    return r.json()
+    body = r.json()
+    return {k: body[k] for k in ("items", "episodes", "bytes")}
+
+
+def test_preview_lists_rejected_requests_and_per_finding_episodes(env):
+    c, ids, _, _ = env
+    alpha, show = ids["alpha"], ids["show"]
+    r = c.post("/api/v1/actions/preview", json={"requests": [
+        {"finding_id": alpha, "action": "delete", "scope": "episodes", "episode_ids": [501]},
+        {"finding_id": show, "action": "delete"},
+        {"finding_id": alpha, "action": "delete"},
+    ]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["rejected"] == [{"index": 0, "finding_id": alpha,
+                                 "reason": "Episode scope requires a series"}]
+    assert body["per_finding"] == [{"finding_id": show, "episodes": 4},
+                                   {"finding_id": alpha, "episodes": 0}]
+    assert (body["items"], body["episodes"]) == (2, 4)
 
 
 def test_action_preview_bytes(env):

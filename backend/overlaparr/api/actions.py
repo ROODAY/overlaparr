@@ -55,14 +55,20 @@ def run_actions(body: ActionsBody, request: Request, db: Session = Depends(get_d
 @router.post("/preview")
 def preview_actions(body: ActionsBody, db: Session = Depends(get_db),
                     store: ConfigStore = Depends(get_store)):
-    """What the requests would touch; requests ``execute`` would reject are left out."""
+    """What the requests would touch; requests ``execute`` would reject are left out.
+
+    ``rejected`` lists those (request index + reason); ``per_finding`` gives the episode
+    count each accepted finding contributes, in request order.
+    """
     cfg = store.current
     findings = _findings(db, body)
     valid = []
-    for req in body.requests:
+    rejected = []
+    for index, req in enumerate(body.requests):
         try:
             validate_request(db, cfg, findings[req.finding_id], req)
-        except ActionError:
+        except ActionError as e:
+            rejected.append({"index": index, "finding_id": req.finding_id, "reason": str(e)})
             continue
         valid.append(req)
 
@@ -79,6 +85,7 @@ def preview_actions(body: ActionsBody, db: Session = Depends(get_db),
     episodes: set[tuple[int, int]] = set()  # (finding id, episode arr id)
     movies: set[int] = set()  # finding ids whose movie file goes
     deleted: dict[tuple[str, int], TrackedEpisode] = {}  # episodes losing their file
+    order = list(dict.fromkeys(r.finding_id for r in valid))
     for req in valid:
         f = findings[req.finding_id]
         delete = req.action == "delete"
@@ -105,5 +112,7 @@ def preview_actions(body: ActionsBody, db: Session = Depends(get_db),
     for f in (findings[i] for i in movies):
         total += db.scalar(select(TrackedItem.file_size).where(
             TrackedItem.instance_id == f.instance_id, TrackedItem.arr_id == f.arr_id)) or 0
-    return {"items": len({r.finding_id for r in valid}), "episodes": len(episodes),
-            "bytes": total}
+    per_finding = [{"finding_id": fid, "episodes": sum(1 for f, _ in episodes if f == fid)}
+                   for fid in order]
+    return {"items": len(order), "episodes": len(episodes), "bytes": total,
+            "rejected": rejected, "per_finding": per_finding}

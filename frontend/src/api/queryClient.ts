@@ -10,6 +10,8 @@ export const queryKeys = {
   scanStatus: ["scan-status"],
   /** Prefix for every findings list query (the full key adds the query string). */
   findings: ["findings"],
+  /** One finding's detail; under the findings prefix so list invalidations refresh it. */
+  findingDetail: (id: string) => ["findings", "detail", id] as const,
 } as const;
 
 export function createQueryClient(): QueryClient {

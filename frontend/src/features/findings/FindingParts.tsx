@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Finding } from "../../api/types";
 import { Badge } from "../../components/Badge";
 import { formatBytes } from "../../lib/format";
@@ -19,16 +20,19 @@ export interface SelectionProps {
 }
 
 /**
- * The item's poster from the API row, or a neutral placeholder with the title.
- * The browser never calls Plex or the *arr apps directly.
+ * The item's poster from the API row, or a neutral placeholder with the title when there
+ * is none or it fails to load. The browser never calls Plex or the *arr apps directly.
  */
 export function Poster({ finding, className }: { finding: Finding; className: string }) {
-  if (finding.poster_url) {
+  const [failed, setFailed] = useState<string | null>(null);
+  if (finding.poster_url && failed !== finding.poster_url) {
+    const src = finding.poster_url;
     return (
       <img
-        src={finding.poster_url}
+        src={src}
         alt={`${finding.title} poster`}
         loading="lazy"
+        onError={() => setFailed(src)}
         className={`${className} rounded bg-slate-800 object-cover`}
       />
     );

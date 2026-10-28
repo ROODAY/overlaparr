@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -136,6 +136,10 @@ describe("Findings", () => {
       "true",
     );
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    // A poster that fails to load (e.g. an arr-relative URL) falls back to the placeholder.
+    fireEvent.error(within(card).getByRole("img"));
+    expect(within(card).queryByRole("img")).not.toBeInTheDocument();
+    expect(card).toHaveTextContent("The Wire");
   });
 
   it("bulk delete opens confirm with bytes", async () => {
@@ -144,7 +148,13 @@ describe("Findings", () => {
     server.use(
       http.post("*/api/v1/actions/preview", async ({ request }) => {
         previews.push((await request.json()) as ActionsBody);
-        return HttpResponse.json({ items: 1, episodes: 0, bytes: 1288490189 });
+        return HttpResponse.json({
+          items: 1,
+          episodes: 0,
+          bytes: 1288490189,
+          rejected: [],
+          per_finding: [{ finding_id: 1, episodes: 0 }],
+        });
       }),
       http.post("*/api/v1/actions", async ({ request }) => {
         runs.push((await request.json()) as ActionsBody);
@@ -194,6 +204,40 @@ describe("Findings", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Bulk actions" })).not.toBeInTheDocument();
     await waitFor(() => expect(findingsQueries.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("bulk delete sends only what the preview accepts", async () => {
+    const runs: ActionsBody[] = [];
+    server.use(
+      http.post("*/api/v1/actions/preview", () =>
+        HttpResponse.json({
+          items: 1,
+          episodes: 0,
+          bytes: 1288490189,
+          rejected: [{ index: 1, finding_id: 2, reason: "Instance no longer configured" }],
+          per_finding: [{ finding_id: 1, episodes: 0 }],
+        }),
+      ),
+      http.post("*/api/v1/actions", async ({ request }) => {
+        runs.push((await request.json()) as ActionsBody);
+        return HttpResponse.json([logRow()]);
+      }),
+    );
+    const user = userEvent.setup();
+    renderFindings();
+    await screen.findByRole("table");
+    await user.click(screen.getByRole("checkbox", { name: "Select Heat" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select The Wire" }));
+    await user.click(screen.getByRole("button", { name: "Delete…" }));
+    const dialog = await screen.findByRole("dialog");
+    const deleting = await within(dialog).findByRole("list", { name: "Will be deleted" });
+    expect(within(deleting).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Heat",
+    ]);
+    expect(dialog).toHaveTextContent("The Wire cannot be deleted: Instance no longer configured");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0].requests.map((r) => r.finding_id)).toEqual([1]);
   });
 
   it("filters write to URL", async () => {

@@ -90,7 +90,12 @@ export function Findings() {
         <ViewToggle view={view} onChange={changeView} />
       </div>
       <FiltersBar params={params} dashboard={dashboard.data} onChange={update} />
-      {selected.size > 0 && <BulkBar ids={[...selected]} onDone={() => select(new Set())} />}
+      {selected.size > 0 && (
+        <BulkBar
+          items={items.filter((f) => selected.has(f.id))}
+          onDone={() => select(new Set())}
+        />
+      )}
       {findings.isPending ? (
         <p className="text-slate-400">Loading…</p>
       ) : findings.isError ? (
