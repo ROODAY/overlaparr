@@ -297,3 +297,60 @@ def test_app_error_notifier_never_raises(tmp_path, db, monkeypatch):
     path.write_text("scan: {page_size: lots}\n", encoding="utf-8")
     assert store.reload_from_disk() is False  # the reload itself is unaffected
     assert store.error
+
+
+def test_repeated_scan_failure_notifies_once_until_a_scan_succeeds(tmp_path, sent):
+    env = te.Env(tmp_path)
+    env.configure(notifications={"connections": [conn("a", scan_problems=True)]})
+
+    def failing(message):
+        def factory(inst):
+            raise RuntimeError(message)
+        return factory
+
+    env.client_factory = failing("Plex said no")
+    eng = env.engine()
+    eng.register_failure_hook(events.notify_scan_failed)
+    assert env.run(eng).status == "failed"
+    assert len(sent) == 1
+    assert env.run(eng).status == "failed"  # the same error again: suppressed
+    assert len(sent) == 1
+
+    env.client_factory = failing("Plex said something else")
+    assert env.run(eng).status == "failed"  # a distinct error is worth a message
+    assert len(sent) == 2
+
+    # Success resets: the next failure notifies again.
+    from overlaparr.arr.snapshot import make_client
+
+    te.mock_radarr([te.radarr_movie()])
+    env.client_factory = make_client
+    assert env.run(eng).status == "ok"
+    env.client_factory = failing("Plex said something else")
+    assert env.run(eng).status == "failed"
+    assert len(sent) == 3
+    env.eng.dispose()
+
+
+def test_suppressed_failure_state_survives_a_restart(tmp_path, sent):
+    env = te.Env(tmp_path)
+    env.configure(notifications={"connections": [conn("a", scan_problems=True)]})
+
+    def failing(inst):
+        raise RuntimeError("same boom every time")
+
+    env.client_factory = failing
+    eng = env.engine()
+    eng.register_failure_hook(events.notify_scan_failed)
+    assert env.run(eng).status == "failed"
+    assert len(sent) == 1
+    env.eng.dispose()
+
+    restarted = te.Env(tmp_path)  # a new process: the dedupe lives in the database
+    restarted.configure(notifications={"connections": [conn("a", scan_problems=True)]})
+    restarted.client_factory = failing
+    eng2 = restarted.engine()
+    eng2.register_failure_hook(events.notify_scan_failed)
+    assert restarted.run(eng2).status == "failed"
+    assert len(sent) == 1
+    restarted.eng.dispose()

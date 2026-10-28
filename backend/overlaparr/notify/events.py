@@ -232,14 +232,41 @@ def dispatch_after_scan(ctx: ScanContext) -> None:
             pass
 
 
+FAILURE_NOTIFIED = "failure_notified"
+
+
+def _notified_failure(db: Session, scan_id: int) -> str | None:
+    """The error a preceding failure already reported, or None once a scan succeeded.
+
+    Read from the ScanRun rows, so the suppression survives a restart and a
+    successful scan resets it.
+    """
+    for run in db.scalars(select(ScanRun).where(ScanRun.id < scan_id)
+                          .order_by(ScanRun.id.desc())):
+        if run.status == "ok":
+            return None
+        notified = (run.summary or {}).get(FAILURE_NOTIFIED)
+        if notified:
+            return str(notified)
+    return None
+
+
 def notify_scan_failed(db: Session, cfg: AppConfig, scan_id: int, error: str) -> None:
     """Scan failure hook: queue a scan problem (error already redacted) and send.
 
-    Also delivers anything the failed scan had queued. Never raises.
+    One message per distinct error: a scan that fails again with the error the
+    last failure reported is not announced, until a scan succeeds. Also delivers
+    anything the failed scan had queued. Never raises.
     """
     try:
-        queue_event(db, "scan_problem", {"kind": "scan", "id": scan_id, "name": f"#{scan_id}",
-                                         "status": "failed", "error": redact(error)})
+        message = redact(error)
+        if _notified_failure(db, scan_id) != message:
+            queue_event(db, "scan_problem", {"kind": "scan", "id": scan_id,
+                                             "name": f"#{scan_id}", "status": "failed",
+                                             "error": message})
+        run = db.get(ScanRun, scan_id)
+        if run is not None:  # remember it, so the next identical failure stays quiet
+            run.summary = {**(run.summary or {}), FAILURE_NOTIFIED: message}
         db.commit()
         send_pending(db, cfg)
     except Exception as e:  # noqa: BLE001 - notifications must never affect a scan
