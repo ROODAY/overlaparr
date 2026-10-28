@@ -10,9 +10,11 @@ import type {
   Me,
   PlexConnected,
   PlexPin,
+  ScanStatus,
   ServerRow,
   SetupStatus,
 } from "../api/types";
+import { SecretInput } from "../components/SecretInput";
 import { InstanceForm } from "../features/instances/InstanceForm";
 
 const INPUT =
@@ -32,6 +34,7 @@ const STEPS = [
 type Step = (typeof STEPS)[number]["id"];
 
 const PLEX_POLL_MS = 2000;
+const SCAN_POLL_MS = 3000;
 
 function message(error: unknown): string {
   return error instanceof ApiError ? error.detail : "Could not reach Overlaparr";
@@ -51,21 +54,25 @@ function firstIncomplete(s: SetupStatus): Step {
 export interface SetupProps {
   /** How often the Plex PIN is polled (tests pass a short interval). */
   plexPollMs?: number;
+  /** How often scan status is polled while waiting to start the first full scan. */
+  scanPollMs?: number;
 }
 
-export function Setup({ plexPollMs = PLEX_POLL_MS }: SetupProps) {
+type Intervals = Required<SetupProps>;
+
+export function Setup({ plexPollMs = PLEX_POLL_MS, scanPollMs = SCAN_POLL_MS }: SetupProps) {
   const status = useQuery({
     queryKey: queryKeys.setupStatus,
     queryFn: () => api.get<SetupStatus>("/setup/status"),
   });
   if (status.isPending) return <Shell>Loading…</Shell>;
   if (status.isError) return <Shell>{message(status.error)}</Shell>;
-  return <SetupGate status={status.data} plexPollMs={plexPollMs} />;
+  return <SetupGate status={status.data} intervals={{ plexPollMs, scanPollMs }} />;
 }
 
 /** Decides once, from the status on arrival, whether to run the wizard and where to start;
  * later status refreshes (as steps complete) do not move the user around. */
-function SetupGate({ status, plexPollMs }: { status: SetupStatus; plexPollMs: number }) {
+function SetupGate({ status, intervals }: { status: SetupStatus; intervals: Intervals }) {
   const [initial] = useState(status);
   const needsLogin = !initial.needs_user && !isComplete(initial);
   const me = useQuery({
@@ -75,7 +82,7 @@ function SetupGate({ status, plexPollMs }: { status: SetupStatus; plexPollMs: nu
   });
 
   if (isComplete(initial)) return <Navigate to="/" replace />;
-  if (initial.needs_user) return <Wizard start="user" plexPollMs={plexPollMs} />;
+  if (initial.needs_user) return <Wizard start="user" intervals={intervals} />;
   if (me.isPending) return <Shell>Loading…</Shell>;
   if (me.isError) {
     if (me.error instanceof ApiError && me.error.status === 401) {
@@ -83,7 +90,7 @@ function SetupGate({ status, plexPollMs }: { status: SetupStatus; plexPollMs: nu
     }
     return <Shell>{message(me.error)}</Shell>;
   }
-  return <Wizard start={firstIncomplete(initial)} plexPollMs={plexPollMs} />;
+  return <Wizard start={firstIncomplete(initial)} intervals={intervals} />;
 }
 
 function Shell({ children }: { children: ReactNode }) {
@@ -98,9 +105,10 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function Wizard({ start, plexPollMs }: { start: Step; plexPollMs: number }) {
+function Wizard({ start, intervals }: { start: Step; intervals: Intervals }) {
   const [step, setStep] = useState<Step>(start);
   const [notice, setNotice] = useState<string | null>(null);
+  const [instanceAdded, setInstanceAdded] = useState(false);
   const current = STEPS.findIndex((s) => s.id === step);
 
   return (
@@ -135,10 +143,21 @@ function Wizard({ start, plexPollMs }: { start: Step; plexPollMs: number }) {
           }}
         />
       )}
-      {step === "plex" && <PlexStep pollMs={plexPollMs} onDone={() => setStep("home")} />}
+      {step === "plex" && (
+        <PlexStep pollMs={intervals.plexPollMs} onDone={() => setStep("home")} />
+      )}
       {step === "home" && <HomeStep onDone={() => setStep("instance")} />}
-      {step === "instance" && <InstanceStep onDone={() => setStep("finish")} />}
-      {step === "finish" && <FinishStep />}
+      {step === "instance" && (
+        <InstanceStep
+          onDone={(added) => {
+            setInstanceAdded(added);
+            setStep("finish");
+          }}
+        />
+      )}
+      {step === "finish" && (
+        <FinishStep instanceAdded={instanceAdded} pollMs={intervals.scanPollMs} />
+      )}
     </Shell>
   );
 }
@@ -165,31 +184,32 @@ function UserStep({ onDone }: { onDone: (warning: string | null) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [localBypass, setLocalBypass] = useState(false);
+  // Both requests run inside the mutation, so the form stays disabled until both finish.
   const create = useMutation({
-    mutationFn: (body: Credentials) => api.post<LoginResult>("/setup/user", body),
+    mutationFn: async ({
+      localBypass: bypass,
+      ...credentials
+    }: Credentials & { localBypass: boolean }): Promise<string | null> => {
+      await api.post<LoginResult>("/setup/user", credentials);
+      if (!bypass) return null;
+      try {
+        await api.put("/settings", { auth: { local_bypass: true } });
+        return null;
+      } catch (err) {
+        return `Your account was created, but login could not be disabled for the local network: ${message(err)}. You can change this later in Settings.`;
+      }
+    },
+    onSuccess: (warning) => {
+      // The new user is signed in now; drop the stale "needs user" and "signed out" state.
+      queryClient.removeQueries({ queryKey: queryKeys.me });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.setupStatus });
+      onDone(warning);
+    },
   });
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    create.mutate(
-      { username, password },
-      {
-        onSuccess: async () => {
-          // The new user is signed in now; drop the stale "needs user" and "signed out" state.
-          queryClient.removeQueries({ queryKey: queryKeys.me });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.setupStatus });
-          let warning: string | null = null;
-          if (localBypass) {
-            try {
-              await api.put("/settings", { auth: { local_bypass: true } });
-            } catch (err) {
-              warning = `Your account was created, but login could not be disabled for the local network: ${message(err)}. You can change this later in Settings.`;
-            }
-          }
-          onDone(warning);
-        },
-      },
-    );
+    create.mutate({ username, password, localBypass });
   };
 
   return (
@@ -263,7 +283,10 @@ function PlexStep({ pollMs, onDone }: { pollMs: number; onDone: () => void }) {
     onSuccess: (data) => {
       setPollError(null);
       setPin(data);
-      if (popup.current && !popup.current.closed) popup.current.location.href = data.auth_url;
+      if (popup.current && !popup.current.closed) {
+        popup.current.opener = null; // Plex's page gets no handle back to Overlaparr
+        popup.current.location.href = data.auth_url;
+      }
     },
     onError: () => popup.current?.close(),
   });
@@ -352,9 +375,8 @@ function PlexStep({ pollMs, onDone }: { pollMs: number; onDone: () => void }) {
           <form onSubmit={submitToken}>
             <label className="block text-sm text-slate-300">
               Plex token
-              <input
+              <SecretInput
                 className={INPUT}
-                autoComplete="off"
                 required
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
@@ -461,7 +483,7 @@ function HomeStep({ onDone }: { onDone: () => void }) {
 
 // ---------- Step 4: instance ----------
 
-function InstanceStep({ onDone }: { onDone: () => void }) {
+function InstanceStep({ onDone }: { onDone: (added: boolean) => void }) {
   return (
     <div>
       <StepHeading>Add a Sonarr or Radarr instance</StepHeading>
@@ -470,9 +492,13 @@ function InstanceStep({ onDone }: { onDone: () => void }) {
         later on the Instances page.
       </p>
       <InstanceForm
-        onSaved={onDone}
+        onSaved={() => onDone(true)}
         actions={
-          <button type="button" onClick={onDone} className="ml-auto text-sm text-slate-400 hover:text-slate-200">
+          <button
+            type="button"
+            onClick={() => onDone(false)}
+            className="ml-auto text-sm text-slate-400 hover:text-slate-200"
+          >
             Skip for now
           </button>
         }
@@ -483,23 +509,75 @@ function InstanceStep({ onDone }: { onDone: () => void }) {
 
 // ---------- Step 5: finish ----------
 
-function FinishStep() {
+type ScanStart = "started" | "already-running";
+
+/** Starts a scan; a 409 means one is already running. */
+async function startScan(): Promise<ScanStart> {
+  try {
+    await api.post("/scan");
+    return "started";
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) return "already-running";
+    throw err;
+  }
+}
+
+function FinishStep({ instanceAdded, pollMs }: { instanceAdded: boolean; pollMs: number }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [waiting, setWaiting] = useState(false);
+  const [waitError, setWaitError] = useState<string | null>(null);
+
+  const done = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.setupStatus });
+    navigate("/", { replace: true });
+  };
+  // The wait loop calls the latest done() without restarting when it changes.
+  const doneRef = useRef(done);
+  useEffect(() => {
+    doneRef.current = done;
+  });
+
   const finish = useMutation({
-    mutationFn: async () => {
-      try {
-        await api.post("/scan");
-      } catch (err) {
-        // 409: a scan is already running (choosing the home server starts one).
-        if (!(err instanceof ApiError && err.status === 409)) throw err;
-      }
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.setupStatus });
-      navigate("/", { replace: true });
+    mutationFn: startScan,
+    onSuccess: (result) => {
+      // The running scan (started when the home server was chosen) read the config before the
+      // instance was added, so it won't cover it: wait for it to end, then scan again.
+      if (result === "already-running" && instanceAdded) setWaiting(true);
+      else done();
     },
   });
+
+  // Poll until the running scan ends, then start the full one. Stops on unmount.
+  useEffect(() => {
+    if (!waiting) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const status = await api.get<ScanStatus>("/scan/status");
+        if (cancelled) return;
+        if (!status.progress.running) {
+          const result = await startScan();
+          if (cancelled) return;
+          if (result === "started") {
+            doneRef.current();
+            return;
+          }
+        }
+        setWaitError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setWaitError(message(err));
+      }
+      timer = setTimeout(poll, pollMs);
+    };
+    timer = setTimeout(poll, pollMs);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [waiting, pollMs]);
 
   return (
     <div>
@@ -509,14 +587,32 @@ function FinishStep() {
         while; you can follow it on the dashboard.
       </p>
       {finish.isError && <Alert>{message(finish.error)}</Alert>}
-      <button
-        type="button"
-        onClick={() => finish.mutate()}
-        disabled={finish.isPending}
-        className={`mt-5 ${PRIMARY}`}
-      >
-        Finish and run first scan
-      </button>
+      {waiting ? (
+        <>
+          <p role="status" className="mt-4 text-sm text-slate-300">
+            A scan is already running (started when you chose the home server) and doesn&apos;t
+            include your new instance — waiting for it to finish, then starting another…
+          </p>
+          {waitError && <Alert>{waitError}</Alert>}
+          <p className="mt-3 text-xs text-amber-300">
+            If you go to the dashboard now, run a scan once the current one finishes so your new
+            instance is included.
+          </p>
+          <button type="button" onClick={done} className={`mt-3 ${SECONDARY}`}>
+            Go to dashboard now
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => finish.mutate()}
+          disabled={finish.isPending}
+          className={`mt-5 ${PRIMARY}`}
+        >
+          Finish and run first scan
+        </button>
+      )}
     </div>
   );
 }
+

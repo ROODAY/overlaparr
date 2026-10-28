@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../../api/client";
 import { queryKeys } from "../../api/queryClient";
+import { SecretInput } from "../../components/SecretInput";
 import {
   MASK,
   type Instance,
@@ -50,16 +51,20 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
   const [apiKey, setApiKey] = useState(initial?.api_key ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [loss, setLoss] = useState<LossHandling>(initial?.loss_handling ?? DEFAULT_LOSS);
+  // Set once saved, so later saves update this instance and a masked key tests with the stored one.
+  const [savedId, setSavedId] = useState<string | undefined>(initial?.id);
 
   const test = useMutation({
     mutationFn: (body: InstanceTest) => api.post<InstanceTestResult>("/instances/test", body),
   });
   const save = useMutation({
     mutationFn: (body: InstanceIn) =>
-      initial
-        ? api.put<Instance>(`/instances/${initial.id}`, body)
+      savedId
+        ? api.put<Instance>(`/instances/${savedId}`, body)
         : api.post<Instance>("/instances", body),
     onSuccess: (saved) => {
+      setSavedId(saved.id);
+      setApiKey(MASK); // the key is stored now; don't keep it in the page
       void queryClient.invalidateQueries({ queryKey: queryKeys.instances });
       void queryClient.invalidateQueries({ queryKey: queryKeys.setupStatus });
       onSaved(saved);
@@ -69,13 +74,26 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
   const runTest = () => {
     const body: InstanceTest = { type, url: url.trim(), api_key: apiKey };
     // A masked key on an existing instance: the backend tests with the stored key.
-    if (initial && apiKey === MASK) body.id = initial.id;
+    if (savedId && apiKey === MASK) body.id = savedId;
     test.mutate(body);
   };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    save.mutate({ name: name.trim(), type, url: url.trim(), api_key: apiKey, enabled, loss_handling: loss });
+    save.mutate({
+      name: name.trim(),
+      type,
+      url: url.trim(),
+      api_key: apiKey,
+      enabled,
+      loss_handling: loss,
+    });
+  };
+
+  /** Connection fields changed: the last test result no longer applies. */
+  const changed = <T,>(set: (value: T) => void) => (value: T) => {
+    test.reset();
+    set(value);
   };
 
   let testResult: ReactNode = null;
@@ -113,7 +131,7 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
           id={ids.type}
           className={INPUT}
           value={type}
-          onChange={(e) => setType(e.target.value as InstanceType)}
+          onChange={(e) => changed(setType)(e.target.value as InstanceType)}
         >
           <option value="sonarr">Sonarr</option>
           <option value="radarr">Radarr</option>
@@ -130,21 +148,20 @@ export function InstanceForm({ initial, onSaved, actions }: InstanceFormProps) {
           required
           placeholder={type === "sonarr" ? "http://sonarr:8989" : "http://radarr:7878"}
           value={url}
-          onChange={(e) => setUrl(e.target.value)}
+          onChange={(e) => changed(setUrl)(e.target.value)}
         />
       </div>
       <div>
         <label htmlFor={ids.key} className="block text-sm text-slate-300">
           API key
         </label>
-        <input
+        <SecretInput
           id={ids.key}
           className={INPUT}
           required
-          autoComplete="off"
           value={apiKey}
           onFocus={(e) => apiKey === MASK && e.target.select()}
-          onChange={(e) => setApiKey(e.target.value)}
+          onChange={(e) => changed(setApiKey)(e.target.value)}
         />
       </div>
       <label className="flex items-center gap-2 text-sm text-slate-300">

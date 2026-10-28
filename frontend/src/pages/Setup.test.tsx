@@ -59,6 +59,19 @@ const loggedIn = http.get("*/api/v1/auth/me", () => HttpResponse.json({ principa
 const loggedOut = http.get("*/api/v1/auth/me", () =>
   HttpResponse.json({ detail: "Not authenticated" }, { status: 401 }),
 );
+const saveInstance = http.post("*/api/v1/instances", async ({ request }) => {
+  const body = (await request.json()) as Record<string, unknown>;
+  status = { ...status, instances_count: 1 };
+  return HttpResponse.json({ id: "i1", ...body, api_key: "********" });
+});
+
+async function fillInstance(user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole("heading", { name: "Add a Sonarr or Radarr instance" });
+  await user.type(screen.getByLabelText("Name"), "Sonarr");
+  await user.type(screen.getByLabelText("URL"), "http://sonarr:8989");
+  await user.type(screen.getByLabelText("API key"), "key");
+}
+
 const refresh = http.post("*/api/v1/servers/refresh", () => HttpResponse.json(SERVERS));
 
 function renderSetup(path = "/setup") {
@@ -67,7 +80,7 @@ function renderSetup(path = "/setup") {
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/setup" element={<Setup plexPollMs={10} />} />
+          <Route path="/setup" element={<Setup plexPollMs={10} scanPollMs={10} />} />
           <Route path="/" element={<p>Dashboard page</p>} />
           <Route path="/login" element={<p>Login page</p>} />
         </Routes>
@@ -95,9 +108,12 @@ describe("Setup wizard", () => {
       }),
       http.put("*/api/v1/settings", async ({ request }) => {
         settingsBody = await request.json();
+        await settingsGate;
         return HttpResponse.json({});
       }),
     );
+    let release!: () => void;
+    const settingsGate = new Promise<void>((resolve) => (release = resolve));
     const user = userEvent.setup();
     renderSetup();
 
@@ -107,6 +123,10 @@ describe("Setup wizard", () => {
     await user.click(screen.getByLabelText("Disable login for local network"));
     await user.click(screen.getByRole("button", { name: "Create account" }));
 
+    // The account form stays locked until the local-network setting is saved too.
+    await waitFor(() => expect(settingsBody).not.toBeNull());
+    expect(screen.getByRole("button", { name: "Create account" })).toBeDisabled();
+    release();
     expect(await screen.findByRole("heading", { name: "Sign in with Plex" })).toBeInTheDocument();
     expect(created).toEqual({ username: "admin", password: "hunter22" });
     expect(settingsBody).toEqual({ auth: { local_bypass: true } });
@@ -145,11 +165,15 @@ describe("Setup wizard", () => {
         return HttpResponse.json({ connected: polls >= 2 });
       }),
     );
+    const popup = { closed: false, opener: {} as unknown, location: { href: "" }, close: vi.fn() };
+    vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
     const user = userEvent.setup();
     renderSetup();
 
     await user.click(await screen.findByRole("button", { name: "Sign in with Plex" }));
     expect(window.open).toHaveBeenCalled();
+    await waitFor(() => expect(popup.location.href).toBe("https://app.plex.tv/auth#?code=abcd"));
+    expect(popup.opener).toBeNull();
     expect(await screen.findByRole("link", { name: /open plex sign-in/i })).toHaveAttribute(
       "href",
       "https://app.plex.tv/auth#?code=abcd",
@@ -157,6 +181,7 @@ describe("Setup wizard", () => {
 
     expect(await screen.findByRole("heading", { name: "Choose your home server" })).toBeInTheDocument();
     expect(polls).toBe(2);
+    expect(popup.close).toHaveBeenCalled();
     expect(await screen.findByLabelText(/My Server/)).toBeInTheDocument();
   });
 
@@ -268,6 +293,60 @@ describe("Setup wizard", () => {
       api_key: "good-key",
       enabled: true,
     });
+  });
+
+  it("waits for the running scan, then scans again to include the new instance", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    let scanPosts = 0;
+    let statusPolls = 0;
+    server.use(
+      statusHandler(),
+      loggedIn,
+      saveInstance,
+      http.post("*/api/v1/scan", () => {
+        scanPosts += 1;
+        return scanPosts === 1
+          ? HttpResponse.json({ detail: "Scan already running" }, { status: 409 })
+          : HttpResponse.json({ scan_id: 3 }, { status: 202 });
+      }),
+      http.get("*/api/v1/scan/status", () => {
+        statusPolls += 1;
+        return HttpResponse.json({ progress: { running: statusPolls < 3 }, runs: [] });
+      }),
+    );
+    const user = userEvent.setup();
+    renderSetup();
+    await fillInstance(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
+
+    expect(await screen.findByText(/doesn.t include your new instance/)).toBeInTheDocument();
+    expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
+    expect(statusPolls).toBe(3);
+    expect(scanPosts).toBe(2);
+  });
+
+  it("can leave for the dashboard while waiting for the running scan", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    server.use(
+      statusHandler(),
+      loggedIn,
+      saveInstance,
+      http.post("*/api/v1/scan", () =>
+        HttpResponse.json({ detail: "Scan already running" }, { status: 409 }),
+      ),
+      http.get("*/api/v1/scan/status", () =>
+        HttpResponse.json({ progress: { running: true }, runs: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderSetup();
+    await fillInstance(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
+    expect(await screen.findByText(/run a scan once the current one finishes/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Go to dashboard now" }));
+    expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
   });
 
   it("lets the instance step be skipped and treats an already running scan as fine", async () => {
