@@ -46,13 +46,15 @@ class Env:
         self.dry_run = dry_run
         self.clients = []
 
-    def run(self, lost_ids):
+    def run(self, lost_ids, before=None):
         cfg = self.store.current
         clients = {i.id: make_client(i) for i in cfg.instances}
         self.clients += clients.values()
         ctx = ScanContext(7, self.db, cfg, {"A": "online"}, self.ok,
                           ReconcileResult(lost_ids=list(lost_ids)), clients, self.store,
                           self.dry_run)
+        if before is not None:  # config edited between scan start and the post-hooks
+            before()
         handle_losses(ctx)
 
     def close(self):
@@ -170,12 +172,22 @@ def test_series_search_uses_remonitored_episodes(db, make_env):
     assert body(post) == {"name": "EpisodeSearch", "episodeIds": [501]}
 
 
+def ui_row(db, f, action="exclude", **kw):
+    row = ActionLog(actor="ui", instance_id=f.instance_id, instance_name="X",
+                    finding_id=f.id, arr_id=f.arr_id, item_title="T", action=action,
+                    scope={}, prior_state={}, result="ok", undoable=True, **kw)
+    db.add(row)
+    db.commit()
+    return row
+
+
 @respx.mock
 def test_series_search_falls_back_to_relevant(db, make_env):
     f = add_finding(db, instance="s1", arr_id=5, kind="series", title="Severance",
                     relevant_episode_ids=[501, 502])
     f.lifecycle = "lost"
     db.commit()
+    ui_row(db, f)  # actioned (excluded) but nothing to re-monitor
     post = respx.post(f"{S}/api/v3/command").respond(json={})
     make_env(loss={"search": True}).run([f.id])
     assert body(post) == {"name": "EpisodeSearch", "episodeIds": [501, 502]}
@@ -272,4 +284,68 @@ def test_search_skipped_when_nothing_to_search(db, make_env):
     db.commit()
     make_env(loss={"search": True}).run([f.id])
     assert non_get_calls() == [] and len(logs(db)) == 0
+    assert events(db)[0].payload["actions_taken"] == []
+
+
+def plain_lost_movie(db):
+    f = add_finding(db)
+    f.lifecycle = "lost"
+    db.add(FindingCopy(finding_id=f.id, server_id="A", quality="same", edition_cmp="same",
+                       matched_by="id"))
+    db.commit()
+    return f
+
+
+@respx.mock
+def test_never_actioned_finding_gets_no_profile_change_or_search(db, make_env):
+    f = plain_lost_movie(db)
+    put = respx.put(f"{R}/api/v3/movie/editor").respond(json=[])
+    post = respx.post(f"{R}/api/v3/command").respond(json={})
+    make_env(loss={"quality_profile_id": 9, "search": True}).run([f.id])
+    assert not put.called and not post.called and logs(db) == []
+    assert events(db)[0].payload["actions_taken"] == []
+
+
+@respx.mock
+def test_undone_action_does_not_count_as_actioned(db, make_env):
+    f = plain_lost_movie(db)
+    ui_row(db, f, action="unmonitor")
+    row = logs(db)[0]
+    row.undone_at = row.ts
+    db.commit()
+    put = respx.put(f"{R}/api/v3/movie/editor").respond(json=[])
+    post = respx.post(f"{R}/api/v3/command").respond(json={})
+    make_env(loss={"quality_profile_id": 9, "search": True}).run([f.id])
+    assert not put.called and not post.called
+
+
+@respx.mock
+def test_ui_actioned_finding_gets_profile_change_and_search(db, make_env):
+    f = plain_lost_movie(db)
+    ui_row(db, f, action="unmonitor")
+    put = respx.put(f"{R}/api/v3/movie/editor").respond(json=[])
+    post = respx.post(f"{R}/api/v3/command").respond(json={})
+    make_env(loss={"quality_profile_id": 9, "search": True}).run([f.id])
+    assert body(put) == {"movieIds": [1], "qualityProfileId": 9}
+    assert body(post) == {"name": "MoviesSearch", "movieIds": [1]}
+    assert events(db)[0].payload["actions_taken"] == ["quality_profile", "search"]
+
+
+@respx.mock
+def test_loss_handling_turned_off_during_scan_is_honoured(db, make_env):
+    f = lost_movie(db, exclusion=True)
+    env = make_env(loss={"remonitor": True, "remove_exclusion": True,
+                         "quality_profile_id": 9, "search": True})
+
+    def turn_off(cfg):
+        for inst in cfg.instances:
+            inst.loss_handling.remonitor = inst.loss_handling.remove_exclusion = False
+            inst.loss_handling.search = False
+            inst.loss_handling.quality_profile_id = None
+
+    routes = [respx.put(f"{R}/api/v3/movie/editor").respond(json=[]),
+              respx.post(f"{R}/api/v3/command").respond(json={}),
+              respx.delete(f"{R}/api/v3/exclusions/55").respond(status_code=200)]
+    env.run([f.id], before=lambda: env.store.update(turn_off))
+    assert not any(r.called for r in routes)
     assert events(db)[0].payload["actions_taken"] == []

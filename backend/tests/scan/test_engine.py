@@ -396,8 +396,9 @@ def _copies(env, finding_id):
                                .order_by(FindingCopy.server_id)))
 
 
-def _writes():
-    return [c.request.method for c in respx.calls if c.request.method != "GET"]
+def _catch_writes():
+    """Any *arr write would land here (unmocked requests are not recorded by respx)."""
+    return respx.route(method__in=["POST", "PUT", "DELETE"]).respond(json={})
 
 
 @respx.mock
@@ -419,6 +420,7 @@ def test_live_server_episode_fetch_failure_does_not_lose_finding(env):
     env.gateway.servers["other"]["episodes_unreachable"] = True
     respx.reset()
     mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    writes = _catch_writes()
     run = env.run(_with_safety_hooks(env))
     assert run.status == "ok", run.error
     assert run.summary["servers"] == {"id-other": "online"}
@@ -429,7 +431,7 @@ def test_live_server_episode_fetch_failure_does_not_lose_finding(env):
     copies = _copies(env, after.id)
     assert [(c.server_id, c.episode_arr_id) for c in copies] == [("id-other", 1)]
     assert all(c.stale for c in copies)
-    assert _writes() == []  # no untag, no re-monitor, no profile change, no search
+    assert not writes.called  # no untag, no re-monitor, no profile change, no search
     with env.factory() as db:
         lost = db.scalars(select(PendingEvent).where(PendingEvent.kind == "finding_lost"))
         assert lost.all() == []
@@ -450,6 +452,7 @@ def test_live_server_episode_fetch_failure_keeps_its_copies_beside_other_server(
     env.gateway.servers["other"]["episodes_unreachable"] = True
     respx.reset()
     mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    writes = _catch_writes()
     run = env.run(_with_safety_hooks(env))
     assert run.status == "ok", run.error
     assert run.summary["hook_errors"] == []
@@ -457,4 +460,4 @@ def test_live_server_episode_fetch_failure_keeps_its_copies_beside_other_server(
     assert after.id == before.id and after.lifecycle == "active" and after.coverage == "full"
     copies = _copies(env, after.id)
     assert [(c.server_id, c.stale) for c in copies] == [("id-other", True), ("id-second", False)]
-    assert _writes() == []
+    assert not writes.called

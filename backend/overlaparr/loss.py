@@ -37,6 +37,16 @@ def _pending(db: Session, f: Finding, actions: tuple[str, ...]) -> list[ActionLo
     ).order_by(ActionLog.id)))
 
 
+def _acted_on(db: Session, f: Finding) -> bool:
+    """Overlaparr (ui or auto) unmonitored, deleted or excluded this finding, not undone."""
+    return db.scalar(select(ActionLog.id).where(
+        ActionLog.finding_id == f.id, ActionLog.actor.in_(("ui", "auto")),
+        ActionLog.action.in_((*_MONITORING_ACTIONS, "exclude")),
+        ActionLog.result == "ok", ActionLog.undone_at.is_(None),
+        ActionLog.undo_of_id.is_(None),
+    ).limit(1)) is not None
+
+
 def _record(ctx: ScanContext, f: Finding, action: str, scope: dict, prior: dict,
             result: str, message: str) -> None:
     ctx.db.add(ActionLog(
@@ -89,6 +99,8 @@ def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig, taken: list[str]
     lh, db = inst.loss_handling, ctx.db
     client_for = borrowed_client_for(ctx.clients)
     remonitored: list[int] = []
+    # Decided before the re-monitor below marks those rows undone.
+    acted = _acted_on(db, f)
 
     if lh.remonitor:
         rows = [r for r in _pending(db, f, _MONITORING_ACTIONS)
@@ -102,8 +114,8 @@ def _handle(ctx: ScanContext, f: Finding, inst: InstanceConfig, taken: list[str]
             taken.append("remove_exclusion")
 
     client = ctx.clients.get(inst.id)
-    if client is None:
-        return
+    if client is None or not acted:
+        return  # profile change and search only follow up on what Overlaparr did
     if lh.quality_profile_id is not None:
         item = _item(db, f)
         prior = {"quality_profile_id": item.quality_profile_id if item is not None else None}
@@ -149,7 +161,8 @@ def handle_losses(ctx: ScanContext) -> None:
         if f is None:
             continue
         try:
-            inst = find_instance(ctx.config, f.instance_id)
+            # Current config: loss handling turned off during the scan is honoured.
+            inst = find_instance(ctx.store.current, f.instance_id)
             if inst is not None and ctx.instance_ok.get(inst.id) is True:
                 _handle(ctx, f, inst, taken)
         except Exception as e:  # noqa: BLE001 - loss handling must never fail the scan
