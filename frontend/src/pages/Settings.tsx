@@ -1,12 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api/client";
 import type {
+  ApiKeyResult,
   CronPreview,
   LogLevel,
+  OkResult,
+  PasswordChange,
   Settings as SettingsData,
   SettingsUpdate,
 } from "../api/types";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/useToast";
 import { formatDateTime } from "../lib/format";
 
@@ -31,6 +35,17 @@ function presetFor(cron: string): string {
 
 function detail(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.detail : fallback;
+}
+
+/** A blank numeric field would be sent as 0: require a real number instead. */
+function numberError(value: string): string | null {
+  const text = value.trim();
+  return text === "" || Number.isNaN(Number(text)) ? "Enter a number" : null;
+}
+
+function FieldError({ message }: { message: string | null }) {
+  if (!message) return null;
+  return <p className="mt-1 text-xs text-red-300">{message}</p>;
 }
 
 /** A value that only follows `value` once it has stopped changing for `delay` ms. */
@@ -62,9 +77,30 @@ export function Settings() {
           Changes are written to config.yaml and applied immediately.
         </p>
       </div>
-      {settings.isPending ? (
+      {settings.data ? (
+        <>
+          {settings.isError && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center gap-3 rounded border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+            >
+              <span>
+                Could not refresh settings: {detail(settings.error, "could not reach Overlaparr")}
+              </span>
+              <button
+                type="button"
+                onClick={() => void settings.refetch()}
+                className="rounded border border-red-400/50 px-3 py-1 text-red-100 hover:bg-red-900/50"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          <SettingsForm settings={settings.data} />
+        </>
+      ) : settings.isPending ? (
         <p className="text-slate-400">Loading…</p>
-      ) : settings.isError ? (
+      ) : (
         <div>
           <p role="alert" className="text-red-300">
             {detail(settings.error, "Could not load settings")}
@@ -77,8 +113,6 @@ export function Settings() {
             Retry
           </button>
         </div>
-      ) : (
-        <SettingsForm settings={settings.data} />
       )}
     </div>
   );
@@ -139,6 +173,14 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
     enabled: debouncedCron !== "",
   });
 
+  const numericErrors = {
+    serverTimeout: numberError(form.serverTimeout),
+    staleHours: numberError(form.staleHours),
+    maxBytes: numberError(form.maxBytes),
+    backupCount: numberError(form.backupCount),
+  };
+  const invalid = Object.values(numericErrors).some((e) => e !== null);
+
   const save = useMutation({
     mutationFn: (body: SettingsUpdate) => api.put<SettingsData>("/settings", body),
     onSuccess: (updated) => {
@@ -162,6 +204,7 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
   };
 
   const onSave = () => {
+    if (invalid) return;
     const appUrl = form.appUrl.trim();
     save.mutate({
       scan: {
@@ -191,20 +234,6 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
 
   return (
     <div className="max-w-3xl space-y-4">
-      {settings.config_error && (
-        <div
-          role="alert"
-          className="rounded border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-200"
-        >
-          <p className="font-semibold text-red-300">config.yaml is invalid</p>
-          <p className="mt-1">
-            The file could not be loaded, so Overlaparr is running on the last valid
-            configuration. Fix the file before saving changes.
-          </p>
-          <pre className="mt-2 font-mono text-xs whitespace-pre-wrap">{settings.config_error}</pre>
-        </div>
-      )}
-
       <Section title="Scan schedule">
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
@@ -282,6 +311,7 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
               onChange={(e) => set("serverTimeout", e.target.value)}
               className={INPUT}
             />
+            <FieldError message={numericErrors.serverTimeout} />
           </div>
           <div>
             <label htmlFor="settings-stale" className={LABEL}>
@@ -295,6 +325,7 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
               onChange={(e) => set("staleHours", e.target.value)}
               className={INPUT}
             />
+            <FieldError message={numericErrors.staleHours} />
           </div>
         </div>
       </Section>
@@ -379,6 +410,8 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
             <strong>every request looks local</strong> — do not enable this there.
           </p>
         )}
+        <PasswordForm />
+        <ApiKeyBlock />
       </Section>
 
       <Section title="Logging">
@@ -412,6 +445,7 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
               onChange={(e) => set("maxBytes", e.target.value)}
               className={INPUT}
             />
+            <FieldError message={numericErrors.maxBytes} />
           </div>
           <div>
             <label htmlFor="settings-log-backups" className={LABEL}>
@@ -425,6 +459,7 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
               onChange={(e) => set("backupCount", e.target.value)}
               className={INPUT}
             />
+            <FieldError message={numericErrors.backupCount} />
           </div>
         </div>
       </Section>
@@ -475,17 +510,189 @@ function SettingsForm({ settings }: { settings: SettingsData }) {
         <p className={HELP}>Secrets live in secrets.yaml, never in this file.</p>
       </Section>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={onSave}
-          disabled={save.isPending}
+          disabled={save.isPending || invalid}
           className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
         >
           Save settings
         </button>
         {save.isPending && <span className="text-sm text-slate-400">Saving…</span>}
+        {settings.config_error && (
+          <p className="text-sm text-red-300">
+            Saving is blocked while config.yaml is invalid. Fix the file, then save again.
+          </p>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** POST /auth/password: separate from the settings PUT, and needs the current password. */
+function PasswordForm() {
+  const toast = useToast();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const mismatch = confirm !== "" && next !== confirm;
+  const complete = current !== "" && next !== "" && confirm !== "";
+
+  const change = useMutation({
+    mutationFn: (body: PasswordChange) => api.post<OkResult>("/auth/password", body),
+    onSuccess: () => {
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      toast("Password changed");
+    },
+    onError: (e) =>
+      toast(`Could not change the password: ${detail(e, "could not reach Overlaparr")}`, "error"),
+  });
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!complete || mismatch) return;
+    change.mutate({ current_password: current, new_password: next });
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="mt-4 space-y-3 border-t border-slate-700 pt-4">
+      <h3 className="text-sm font-medium text-slate-300">Change password</h3>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div>
+          <label htmlFor="settings-current-password" className={LABEL}>
+            Current password
+          </label>
+          <input
+            id="settings-current-password"
+            type="password"
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            className={INPUT}
+          />
+        </div>
+        <div>
+          <label htmlFor="settings-new-password" className={LABEL}>
+            New password
+          </label>
+          <input
+            id="settings-new-password"
+            type="password"
+            autoComplete="new-password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            className={INPUT}
+          />
+        </div>
+        <div>
+          <label htmlFor="settings-confirm-password" className={LABEL}>
+            Confirm new password
+          </label>
+          <input
+            id="settings-confirm-password"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            className={INPUT}
+          />
+        </div>
+      </div>
+      {mismatch && <p className="text-sm text-red-300">Passwords do not match</p>}
+      <button
+        type="submit"
+        disabled={!complete || mismatch || change.isPending}
+        className="rounded border border-slate-500 px-4 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Change password
+      </button>
+    </form>
+  );
+}
+
+/** POST /auth/api-key/regenerate: the new key is shown once and never fetched again. */
+function ApiKeyBlock() {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [key, setKey] = useState<string | null>(null);
+
+  const regenerate = useMutation({
+    mutationFn: () => api.post<ApiKeyResult>("/auth/api-key/regenerate"),
+    onSuccess: (result) => {
+      setKey(result.api_key);
+      setConfirming(false);
+      toast("API key regenerated");
+    },
+    onError: (e) => {
+      setConfirming(false);
+      toast(`Could not regenerate the API key: ${detail(e, "could not reach Overlaparr")}`, "error");
+    },
+  });
+
+  const copy = async () => {
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key);
+      toast("API key copied");
+    } catch {
+      toast("Could not copy the API key", "error");
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-slate-700 pt-4">
+      <h3 className="text-sm font-medium text-slate-300">API key</h3>
+      <p className={HELP}>
+        Send it as the X-Api-Key header for scripts. It is shown only once after you generate it.
+      </p>
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="mt-2 rounded border border-slate-500 px-4 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700"
+      >
+        Regenerate API key
+      </button>
+      {key && (
+        <div className="mt-3 max-w-md">
+          <label htmlFor="settings-api-key" className={LABEL}>
+            New API key
+          </label>
+          <div className="mt-1 flex gap-2">
+            <input
+              id="settings-api-key"
+              readOnly
+              value={key}
+              className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-1.5 font-mono text-sm text-slate-100 focus:border-accent focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => void copy()}
+              className="rounded border border-slate-600 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700"
+            >
+              Copy
+            </button>
+          </div>
+          <p className={HELP}>Store it now: it will not be shown again.</p>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirming}
+        title="Regenerate API key?"
+        body={
+          <>
+            The current key stops working immediately. Scripts that use it will fail until you
+            give them the new key.
+          </>
+        }
+        confirmLabel="Regenerate"
+        destructive
+        confirmDisabled={regenerate.isPending}
+        onConfirm={() => regenerate.mutate()}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }
