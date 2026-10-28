@@ -1,15 +1,13 @@
 import { screen, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, it } from "vitest";
-import { FakeEventSource, fakeEventSourceFactory } from "../test/fakeEventSource";
+import { describe, expect, it } from "vitest";
+import { fakeEventSourceFactory } from "../test/fakeEventSource";
 import { dashboardFixture } from "../test/fixtures";
 import { renderWithProviders } from "../test/render";
 import { server } from "../test/server";
 import { Dashboard } from "./Dashboard";
 
 const OPTIONS = { createEventSource: fakeEventSourceFactory, pollMs: 20 };
-
-beforeEach(() => FakeEventSource.reset());
 
 function renderDashboard(data = dashboardFixture()) {
   server.use(http.get("*/api/v1/dashboard", () => HttpResponse.json(data)));
@@ -46,6 +44,15 @@ describe("Dashboard", () => {
           error: "Plex unreachable",
           summary: {},
         },
+        servers: [
+          ...dashboardFixture().servers,
+          {
+            id: "m-c",
+            label: "Charlie",
+            reachability: "partial",
+            last_indexed_at: "2026-10-26T09:00:00Z",
+          },
+        ],
       }),
     );
     const scans = await screen.findByRole("region", { name: "Scans" });
@@ -57,6 +64,10 @@ describe("Dashboard", () => {
     const bravo = within(servers).getByText("Bravo").closest("li")!;
     expect(bravo).toHaveTextContent(/stale — last seen/);
     expect(within(servers).getByText("Alpha").closest("li")).toHaveTextContent("online");
+    expect(within(servers).getByText("Charlie").closest("li")).toHaveTextContent(
+      /partial — last indexed/,
+    );
+    expect(servers).toHaveTextContent(/never treated as content removed/);
 
     const instances = screen.getByRole("region", { name: "Instances" });
     expect(within(instances).getByText("Sonarr").closest("li")).toHaveTextContent("ok");

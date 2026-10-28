@@ -17,6 +17,8 @@ export interface ScanEventsOptions {
   createEventSource?: (url: string) => EventSourceLike | null;
   /** Poll interval while the stream is down. */
   pollMs?: number;
+  /** Safety poll interval while a scan runs and the stream is up (it can drop the final event). */
+  safetyPollMs?: number;
 }
 
 export interface ScanEvents {
@@ -31,6 +33,7 @@ export interface ScanEvents {
 
 export const EVENTS_URL = `${API_BASE}/scan/events`;
 const POLL_MS = 3000;
+const SAFETY_POLL_MS = 10_000;
 
 const IDLE: ScanProgress = { phase: null, detail: null, done: 0, total: 0, running: false };
 
@@ -42,19 +45,26 @@ function defaultEventSource(url: string): EventSourceLike | null {
  * Live scan progress from the SSE stream, falling back to polling /scan/status while the
  * stream is down. The stream can drop events for a slow client (even the final one), so
  * /scan/status is re-read whenever a scan ends, on reconnect and while polling, and its
- * answer replaces whatever the stream said last.
+ * answer replaces whatever the stream said last. While a scan runs, a slow safety poll also
+ * runs with the stream up, in case the final "not running" event is dropped without an error.
  */
 export function useScanEvents({
   createEventSource = defaultEventSource,
   pollMs = POLL_MS,
+  safetyPollMs = SAFETY_POLL_MS,
 }: ScanEventsOptions = {}): ScanEvents {
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState<ScanProgress>(IDLE);
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
+  // Orders updates: a status response requested before the latest applied update is stale.
+  const seqRef = useRef(0);
+  const appliedRef = useRef(0);
 
   const apply = useCallback(
-    (next: ScanProgress) => {
+    (next: ScanProgress, seq: number) => {
+      if (seq < appliedRef.current) return false;
+      appliedRef.current = seq;
       const wasRunning = runningRef.current;
       runningRef.current = next.running;
       setProgress(next);
@@ -68,9 +78,10 @@ export function useScanEvents({
   );
 
   const refresh = useCallback(async () => {
+    const seq = ++seqRef.current;
     try {
       const status = await api.get<ScanStatus>("/scan/status");
-      if (mountedRef.current) apply(status.progress);
+      if (mountedRef.current) apply(status.progress, seq);
     } catch {
       // Unreachable for now; the next poll or stream event will catch up.
     }
@@ -121,7 +132,7 @@ export function useScanEvents({
           return;
         }
         // A finished scan may have been followed by events this client never got.
-        if (apply(next)) void refresh();
+        if (apply(next, ++seqRef.current)) void refresh();
       };
       // EventSource reconnects by itself; poll until it is back (or for good if it gave up).
       source.onerror = startPolling;
@@ -136,6 +147,13 @@ export function useScanEvents({
       }
     };
   }, [apply, refresh, pollMs]);
+
+  // Safety net for a dropped final event: re-read the status every so often while running.
+  useEffect(() => {
+    if (!progress.running) return;
+    const timer = setInterval(() => void refresh(), safetyPollMs);
+    return () => clearInterval(timer);
+  }, [progress.running, refresh, safetyPollMs]);
 
   return {
     running: progress.running,

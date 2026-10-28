@@ -1,7 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScanProgress } from "../../api/types";
 import { FakeEventSource, fakeEventSourceFactory } from "../../test/fakeEventSource";
 import { IDLE, scanStatus } from "../../test/fixtures";
@@ -9,7 +9,7 @@ import { renderWithProviders } from "../../test/render";
 import { server } from "../../test/server";
 import { CheckNowButton } from "./CheckNowButton";
 
-const OPTIONS = { createEventSource: fakeEventSourceFactory, pollMs: 20 };
+const OPTIONS = { createEventSource: fakeEventSourceFactory, pollMs: 20, safetyPollMs: 60_000 };
 const INDEXING: ScanProgress = {
   phase: "indexing",
   detail: "Friend",
@@ -22,7 +22,6 @@ let statusCalls: number;
 let status: ScanProgress;
 
 beforeEach(() => {
-  FakeEventSource.reset();
   statusCalls = 0;
   status = IDLE;
   server.use(
@@ -110,9 +109,58 @@ describe("CheckNowButton", () => {
     act(() => es.open());
     const afterReconnect = statusCalls;
     await waitFor(() => expect(statusCalls).toBe(afterReconnect + 1));
-    // No further polls once the stream is back.
-    await new Promise((r) => setTimeout(r, 80));
-    expect(statusCalls).toBe(afterReconnect + 1);
+    // No further polls once the stream is back (polls would come every 20 ms).
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(200);
+      expect(statusCalls).toBe(afterReconnect + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-reads the status while running even if the stream stays silent", async () => {
+    renderWithProviders(
+      <CheckNowButton scanOptions={{ ...OPTIONS, safetyPollMs: 20 }} />,
+    );
+    const es = FakeEventSource.latest;
+    act(() => es.open());
+    act(() => es.emit(INDEXING));
+    expect(screen.getByRole("button", { name: /Scanning/ })).toBeDisabled();
+    // The final "not running" event is dropped; nothing else arrives on the stream.
+    expect(await screen.findByRole("button", { name: "Check now" })).toBeEnabled();
+    const calls = statusCalls;
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(200);
+      expect(statusCalls).toBe(calls); // the safety poll stops once idle
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a status response older than a newer stream event", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let staleSent = false;
+    server.use(
+      http.get("*/api/v1/scan/status", async () => {
+        await gate;
+        staleSent = true;
+        return HttpResponse.json(scanStatus(IDLE));
+      }),
+    );
+    renderButton();
+    const es = FakeEventSource.latest;
+    act(() => es.fail()); // starts a poll, held at the gate
+    act(() => es.open());
+    act(() => es.emit(INDEXING));
+    release();
+    await waitFor(() => expect(staleSent).toBe(true));
+    // Let the client read and apply (or drop) the stale response.
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    expect(screen.getByRole("button", { name: /Scanning/ })).toBeDisabled();
+    expect(screen.getByText("Indexing servers: Friend (1/3)")).toBeInTheDocument();
   });
 
   it("closes the stream on unmount", () => {

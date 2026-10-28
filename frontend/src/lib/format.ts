@@ -7,11 +7,24 @@ export function formatBytes(n: number): string {
   let size = Math.max(0, n);
   for (const unit of UNITS) {
     if (size < 1024 || unit === "TB") {
-      return unit === "B" ? `${Math.trunc(size)} B` : `${size.toFixed(1)} ${unit}`;
+      return unit === "B" ? `${Math.trunc(size)} B` : `${toFixed1(size)} ${unit}`;
     }
     size /= 1024;
   }
-  return `${size.toFixed(1)} TB`;
+  return `${toFixed1(size)} TB`;
+}
+
+/**
+ * One decimal place, ties to even like Python's `:.1f` (toFixed rounds exact ties up).
+ * A double is an exact tie at one decimal only when 4x is an odd integer (e.g. 1.25).
+ */
+function toFixed1(x: number): string {
+  const quarters = x * 4;
+  if (Number.isInteger(quarters) && quarters % 2 === 1) {
+    const tenths = Math.floor(x * 10);
+    return ((tenths % 2 === 0 ? tenths : tenths + 1) / 10).toFixed(1);
+  }
+  return x.toFixed(1);
 }
 
 const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });

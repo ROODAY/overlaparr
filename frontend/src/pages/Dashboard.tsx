@@ -128,8 +128,8 @@ function Cards({ data }: { data: DashboardData }) {
               ))}
             </ul>
             <p className="mt-3 text-xs text-slate-500">
-              Offline and stale servers keep their last known library; their findings are not
-              treated as removed.
+              Partial, stale and offline servers are never treated as content removed: they keep
+              their last known library.
             </p>
           </>
         )}
@@ -239,7 +239,13 @@ const REACHABILITY: Record<DashboardServer["reachability"], BadgeVariant> = {
 };
 
 function ServerRow({ server }: { server: DashboardServer }) {
-  const unreachable = server.reachability === "offline" || server.reachability === "stale";
+  const r = server.reachability;
+  const prefix =
+    r === "offline" || r === "stale"
+      ? `${r} — last seen `
+      : r === "online"
+        ? "indexed "
+        : `${r} — last indexed `;
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
       <span className="text-slate-200">{server.label}</span>
@@ -247,7 +253,7 @@ function ServerRow({ server }: { server: DashboardServer }) {
         <Badge variant={REACHABILITY[server.reachability]}>{server.reachability}</Badge>
         {server.last_indexed_at ? (
           <span>
-            {unreachable ? `${server.reachability} — last seen ` : "indexed "}
+            {prefix}
             <When iso={server.last_indexed_at} />
           </span>
         ) : (
