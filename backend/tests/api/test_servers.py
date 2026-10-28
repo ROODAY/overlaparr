@@ -1,6 +1,6 @@
 from sqlalchemy import func, select
 
-from overlaparr.db.models import Finding, FindingCopy, RuleState, ScanRun, Server
+from overlaparr.db.models import ActionLog, Finding, FindingCopy, RuleState, ScanRun, Server
 from overlaparr.plex.gateway import PlexUnreachable
 from tests.api.conftest import wait_idle
 
@@ -68,11 +68,20 @@ def test_change_home_server_rebuilds(authed):
     _seed_findings(app)
     runs_before = _count(app, ScanRun)
 
+    with app.state.db_factory() as db:
+        fid = db.scalar(select(Finding.id))
+        db.add(ActionLog(actor="ui", instance_id="r1", instance_name="R", finding_id=fid,
+                         arr_id=1, item_title="Snap", action="unmonitor", result="ok"))
+        db.commit()
+
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
     assert r.status_code == 200
     assert r.json()["home_server"] == "id-friend"
     assert app.state.store.current.plex.home_server == "id-friend"
     assert _count(app, Finding) == 0
+    with app.state.db_factory() as db:  # history kept, detached from the deleted finding
+        [log_row] = db.scalars(select(ActionLog).where(ActionLog.item_title == "Snap")).all()
+        assert log_row.finding_id is None
     assert _count(app, FindingCopy) == 0
     assert _count(app, RuleState) == 0
     wait_idle(app)
@@ -133,7 +142,29 @@ def test_change_home_server_start_race(authed, monkeypatch):
     app = authed.app
     _connect(authed)
     authed.post("/api/v1/servers/refresh")
-    monkeypatch.setattr(app.state.scan_engine, "start", lambda trigger: None)
+    _seed_findings(app)
+    # A scan grabbed the lock first: the switch never runs, nothing changes.
+    monkeypatch.setattr(app.state.scan_engine, "start", lambda trigger, before=None: None)
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
     assert r.status_code == 409
-    assert "scan" in r.json()["detail"].lower()
+    assert r.json()["detail"] == "A scan is running; try again when it finishes"
+    assert app.state.store.current.plex.home_server is None
+    assert _count(app, Finding) == 1
+
+
+def test_change_home_server_holds_scan_lock(authed, monkeypatch):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    engine, store = app.state.scan_engine, app.state.store
+    seen = []
+    real_update = store.update
+
+    def update(mutator):
+        seen.append(engine.running)  # config changes while the scan lock is held
+        return real_update(mutator)
+
+    monkeypatch.setattr(store, "update", update)
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
+    assert r.status_code == 200 and seen == [True]
+    wait_idle(app)

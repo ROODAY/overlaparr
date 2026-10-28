@@ -491,3 +491,34 @@ def test_auto_unmonitor_then_series_stops_matching_sets_no_hold(env):
     [f] = env.findings()
     assert f.automation_hold is False
     assert not writes.called
+
+
+def test_start_runs_before_under_the_lock(env):
+    env.configure(instances=[])
+    engine = env.engine()
+    q = env.bus.subscribe()
+    seen = []
+    scan_id = engine.start("manual", before=lambda: seen.append(engine.running))
+    assert isinstance(scan_id, int) and seen == [True]
+    wait_done(q)
+
+
+def test_start_before_skipped_when_busy_and_failure_releases_lock(env):
+    env.configure(instances=[])
+    engine = env.engine()
+    called = []
+    engine._lock.acquire()
+    try:
+        assert engine.start("manual", before=lambda: called.append(1)) is None
+        assert called == []
+    finally:
+        engine._lock.release()
+
+    def boom():
+        raise RuntimeError("no")
+
+    with pytest.raises(RuntimeError):
+        engine.start("manual", before=boom)
+    assert engine.running is False
+    with env.factory() as db:
+        assert db.scalars(select(ScanRun)).all() == []

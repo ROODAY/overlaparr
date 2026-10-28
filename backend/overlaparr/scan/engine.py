@@ -85,11 +85,18 @@ class ScanEngine:
     def register_post_hook(self, fn: PostHook) -> None:
         self._hooks.append(fn)
 
-    def start(self, trigger: Trigger) -> int | None:
-        """Start a scan in a daemon thread; None when one is already running."""
+    def start(self, trigger: Trigger, before: Callable[[], None] | None = None) -> int | None:
+        """Start a scan in a daemon thread; None when one is already running.
+
+        ``before`` runs while the scan lock is held, before the scan starts, so a change
+        it makes (e.g. a new home server) is atomic with respect to any other scan.
+        If it raises, no scan starts and the exception propagates.
+        """
         if not self._lock.acquire(blocking=False):
             return None
         try:
+            if before is not None:
+                before()
             scan_id, started = self._create_run(trigger)
             threading.Thread(
                 target=self._run_and_release, args=(scan_id, started), name="scan", daemon=True

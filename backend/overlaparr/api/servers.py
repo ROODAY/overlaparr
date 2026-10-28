@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from overlaparr.api.deps import get_db, get_engine, get_store, update_config
 from overlaparr.config.schema import AppConfig, ServerOverride
 from overlaparr.config.store import ConfigStore
-from overlaparr.db.models import Finding, Server
+from overlaparr.db.models import Server
 from overlaparr.plex.gateway import PlexUnreachable
 from overlaparr.plex.indexer import refresh_servers
 from overlaparr.scan.engine import ScanEngine
+from overlaparr.scan.reconcile import delete_findings
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -87,23 +88,24 @@ def set_home(body: HomeIn, db: Session = Depends(get_db),
     _known(db, body.machine_id)
     if store.current.plex.home_server == body.machine_id:
         return {"home_server": body.machine_id, "scan_id": None}
-    # A running scan still uses the old home and would recreate stale findings.
-    if engine.running:
+
+    def switch() -> None:
+        # Runs under the scan lock: no scan can start (and recreate findings against
+        # the old home) between the config change, the purge and the rebuild scan.
+        update_config(store, lambda c: setattr(c.plex, "home_server", body.machine_id))
+        for srv in db.scalars(select(Server)):
+            srv.is_home = srv.machine_id == body.machine_id
+        # Findings were computed against the old home: drop them and rebuild.
+        delete_findings(db)
+        db.commit()
+
+    try:
+        scan_id = engine.start("manual", before=switch)
+    except Exception:
+        db.rollback()
+        raise
+    if scan_id is None:  # a scan is running: nothing was changed
         raise HTTPException(status_code=409, detail=SCAN_RUNNING)
-    update_config(store, lambda c: setattr(c.plex, "home_server", body.machine_id))
-    for srv in db.scalars(select(Server)):
-        srv.is_home = srv.machine_id == body.machine_id
-    # Findings were computed against the old home: drop them (copies, ignores and
-    # rule states cascade) and rebuild with a fresh scan.
-    db.execute(delete(Finding))
-    db.commit()
-    scan_id = engine.start("manual")
-    if scan_id is None:  # a scan started in between (race)
-        raise HTTPException(
-            status_code=409,
-            detail="Home server changed, but a scan started meanwhile; run a scan when it "
-                   "finishes to rebuild findings",
-        )
     return {"home_server": body.machine_id, "scan_id": scan_id}
 
 
