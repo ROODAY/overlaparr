@@ -45,6 +45,20 @@ export interface OkResult {
   ok: boolean;
 }
 
+/** POST /auth/password */
+export interface PasswordChange {
+  current_password: string;
+  new_password: string;
+}
+
+/**
+ * POST /auth/api-key/regenerate. The new key is returned only here, once;
+ * no endpoint ever returns the stored key.
+ */
+export interface ApiKeyResult {
+  api_key: string;
+}
+
 // ---------- Plex ----------
 
 /** POST /plex/pin */

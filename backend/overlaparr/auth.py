@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 from collections.abc import Callable
+from typing import Any
 
 import bcrypt
 from fastapi import HTTPException, Request, Response
@@ -56,14 +57,26 @@ def _hash_password(password: str) -> str:
 _DUMMY_HASH = _hash_password("overlaparr-dummy-password")
 
 
-def create_user(db: Session, username: str, password: str) -> None:
-    username = (username or "").strip()
-    if not username:
-        raise ValueError("username must not be empty")
+def check_password(password: str) -> None:
+    """The one password rule, shared by setup and by changing the password."""
     if len(password or "") < MIN_PASSWORD_LENGTH:
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
         raise ValueError(f"password must be at most {MAX_PASSWORD_BYTES} bytes (UTF-8)")
+
+
+def set_password(db: Session, user: Any, password: str) -> None:
+    """Replace the user's password; every existing session stops matching."""
+    check_password(password)
+    user.password_hash = _hash_password(password)
+    db.commit()
+
+
+def create_user(db: Session, username: str, password: str) -> None:
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("username must not be empty")
+    check_password(password)
     if not needs_setup(db):
         raise ValueError("a user already exists")
     db.add(_user_model()(username=username, password_hash=_hash_password(password)))

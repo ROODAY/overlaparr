@@ -137,3 +137,104 @@ def test_every_api_route_requires_auth(client):
             assert r.status_code == 401, (method, path, r.status_code)
             checked += 1
     assert checked >= 15
+
+
+PASSWORD = "/api/v1/auth/password"
+REGEN = "/api/v1/auth/api-key/regenerate"
+
+
+def _relogin(c, password):
+    r = c.post("/api/v1/auth/login", json={"username": USER["username"], "password": password})
+    assert r.status_code == 200, r.text
+
+
+def test_change_password(authed):
+    r = authed.post(PASSWORD, json={"current_password": "wrong-one", "new_password": "newpassword1"})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "Current password is incorrect"}
+
+    for bad in ("", "short"):
+        r = authed.post(PASSWORD, json={"current_password": USER["password"],
+                                        "new_password": bad})
+        assert r.status_code == 422
+        assert "at least 8" in str(r.json()["detail"])
+    r = authed.post(PASSWORD, json={"current_password": USER["password"],
+                                    "new_password": "x" * 73})
+    assert r.status_code == 422  # same byte cap as setup
+
+    r = authed.post(PASSWORD, json={"current_password": USER["password"],
+                                    "new_password": "newpassword1"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    # The caller stays signed in; the old password no longer works.
+    assert authed.get("/api/v1/auth/me").json() == {"principal": "alice"}
+    assert authed.post("/api/v1/auth/login",
+                       json={"username": "alice", "password": USER["password"]}
+                       ).status_code == 401
+    _relogin(authed, "newpassword1")
+
+
+def test_change_password_invalidates_other_sessions(authed):
+    other = TestClient(authed.app)  # the app's lifespan is already running
+    _relogin(other, USER["password"])
+    assert other.get("/api/v1/auth/me").json() == {"principal": "alice"}
+    r = authed.post(PASSWORD, json={"current_password": USER["password"],
+                                    "new_password": "newpassword1"})
+    assert r.status_code == 200
+    # The caller's re-issued cookie still works...
+    assert authed.get("/api/v1/auth/me").json() == {"principal": "alice"}
+    # ...the other session's (bound to the old hash) does not.
+    assert other.get("/api/v1/auth/me").status_code == 401
+
+
+def test_change_password_requires_a_signed_in_user(authed):
+    key = authed.app.state.store.get_secret("app_api_key")
+    r = authed.post(PASSWORD, json={"current_password": USER["password"],
+                                    "new_password": "newpassword1"},
+                    headers={"X-Api-Key": key})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "Sign in with your password to change it"}
+
+    authed.app.state.store.update(lambda c: setattr(c.auth, "local_bypass", True))
+    local = TestClient(authed.app, client=("192.168.1.2", 1234))  # no cookie/key
+    assert local.get("/api/v1/auth/me").json() == {"principal": "local"}
+    r = local.post(PASSWORD, json={"current_password": USER["password"],
+                                   "new_password": "newpassword1"})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "Sign in with your password to change it"}
+    # The password was not changed.
+    _relogin(TestClient(authed.app), USER["password"])
+
+
+def test_regenerate_api_key(authed):
+    from overlaparr.logging_setup import redact
+
+    old = authed.app.state.store.get_secret("app_api_key")
+    r = authed.post(REGEN)
+    assert r.status_code == 200, r.text
+    new = r.json()["api_key"]
+    assert new and new != old
+    assert list(r.json()) == ["api_key"]  # returned once, nothing else
+    assert authed.app.state.store.get_secret("app_api_key") == new
+    assert authed.get("/api/v1/settings").json()  # no endpoint ever returns the key
+    for path in ("/api/v1/settings", "/api/v1/settings/config.yaml"):
+        assert new not in authed.get(path).text
+    text = (authed.app.state.store.secrets_path).read_text(encoding="utf-8")
+    assert new in text and old not in text
+    assert new not in redact(f"key is {new}")
+
+    authed.cookies.clear()
+    assert authed.get("/api/v1/auth/me", headers={"X-Api-Key": old}).status_code == 401
+    assert authed.get("/api/v1/auth/me", headers={"X-Api-Key": new}).json() == {
+        "principal": "api-key"}
+    # Any authenticated principal may regenerate (here: the api key itself).
+    r = authed.post(REGEN, headers={"X-Api-Key": new})
+    assert r.status_code == 200 and r.json()["api_key"] not in (new, old)
+
+
+def test_auth_endpoints_require_authentication(client):
+    client.post("/api/v1/setup/user", json=USER)
+    client.cookies.clear()
+    assert client.post(PASSWORD, json={"current_password": "a", "new_password": "b" * 9}
+                       ).status_code == 401
+    assert client.post(REGEN).status_code == 401
