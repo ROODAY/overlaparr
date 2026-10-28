@@ -1,7 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScanProgress } from "../../api/types";
 import { FakeEventSource, fakeEventSourceFactory } from "../../test/fakeEventSource";
 import { IDLE, scanStatus } from "../../test/fixtures";
@@ -31,6 +31,15 @@ beforeEach(() => {
     }),
   );
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** Fakes timers before mount so the hook's intervals run on the fake clock. */
+function useFakeClock() {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+}
 
 function renderButton() {
   return renderWithProviders(<CheckNowButton scanOptions={OPTIONS} />);
@@ -101,42 +110,35 @@ describe("CheckNowButton", () => {
   });
 
   it("stops polling and re-reads the status when the stream reconnects", async () => {
-    renderButton();
+    useFakeClock();
+    renderWithProviders(<CheckNowButton scanOptions={{ ...OPTIONS, pollMs: 1000 }} />);
     const es = FakeEventSource.latest;
     act(() => es.open());
-    act(() => es.fail());
-    await waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(1));
-    act(() => es.open());
-    const afterReconnect = statusCalls;
-    await waitFor(() => expect(statusCalls).toBe(afterReconnect + 1));
-    // No further polls once the stream is back (polls would come every 20 ms).
-    vi.useFakeTimers();
-    try {
-      await vi.advanceTimersByTimeAsync(200);
-      expect(statusCalls).toBe(afterReconnect + 1);
-    } finally {
-      vi.useRealTimers();
-    }
+    act(() => es.fail()); // polls at once, then every second
+    await waitFor(() => expect(statusCalls).toBe(1));
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    await waitFor(() => expect(statusCalls).toBe(2));
+    act(() => es.open()); // reconnected: one catch-up read
+    await waitFor(() => expect(statusCalls).toBe(3));
+    // No further polls once the stream is back.
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(statusCalls).toBe(3);
   });
 
   it("re-reads the status while running even if the stream stays silent", async () => {
-    renderWithProviders(
-      <CheckNowButton scanOptions={{ ...OPTIONS, safetyPollMs: 20 }} />,
-    );
+    useFakeClock();
+    renderWithProviders(<CheckNowButton scanOptions={{ ...OPTIONS, safetyPollMs: 1000 }} />);
     const es = FakeEventSource.latest;
     act(() => es.open());
     act(() => es.emit(INDEXING));
     expect(screen.getByRole("button", { name: /Scanning/ })).toBeDisabled();
     // The final "not running" event is dropped; nothing else arrives on the stream.
+    await act(() => vi.advanceTimersByTimeAsync(1000));
     expect(await screen.findByRole("button", { name: "Check now" })).toBeEnabled();
-    const calls = statusCalls;
-    vi.useFakeTimers();
-    try {
-      await vi.advanceTimersByTimeAsync(200);
-      expect(statusCalls).toBe(calls); // the safety poll stops once idle
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(statusCalls).toBe(1);
+    // The safety poll stops once idle.
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(statusCalls).toBe(1);
   });
 
   it("ignores a status response older than a newer stream event", async () => {
