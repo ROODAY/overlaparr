@@ -1,0 +1,61 @@
+# Example stack: copy to docker-compose.yml and adjust PUID/PGID/TZ and paths.
+#
+# Sonarr and Radarr are examples only. If you already run them, delete those two
+# services and point Overlaparr at your existing containers (put them on the same
+# network, or use their host:port URLs).
+#
+# With this file, add instances in Overlaparr as http://sonarr:8989 and http://radarr:7878.
+
+services:
+  overlaparr:
+    image: overlaparr:latest
+    build: .
+    container_name: overlaparr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./overlaparr:/config
+    ports:
+      - "${OVERLAPARR_PORT:-8686}:8686"
+    networks:
+      - media
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./sonarr:/config
+      - ./media/tv:/tv
+      - ./downloads:/downloads
+    ports:
+      - "8989:8989"
+    networks:
+      - media
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./radarr:/config
+      - ./media/movies:/movies
+      - ./downloads:/downloads
+    ports:
+      - "7878:7878"
+    networks:
+      - media
+    restart: unless-stopped
+
+networks:
+  media:
