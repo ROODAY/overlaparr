@@ -56,6 +56,24 @@ describe("ConfirmDialog", () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
+  it("focuses Cancel when no text is required", () => {
+    setup();
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+  });
+
+  it("focuses the text input when text is required", () => {
+    setup("DELETE");
+    expect(screen.getByRole("textbox")).toHaveFocus();
+  });
+
+  it("does not confirm on Enter while the typed text is wrong", async () => {
+    const { onConfirm, user } = setup("DELETE");
+    await user.type(screen.getByRole("textbox"), "DELET{Enter}");
+    expect(onConfirm).not.toHaveBeenCalled();
+    await user.type(screen.getByRole("textbox"), "E{Enter}");
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
   it("renders nothing when closed", () => {
     render(
       <ConfirmDialog open={false} title="T" body="B" confirmLabel="OK" onConfirm={() => {}} onCancel={() => {}} />,

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { queryKeys } from "../api/queryClient";
@@ -29,6 +29,15 @@ export function Layout() {
     refetchInterval: POLL_MS,
   });
   const configError = dashboard.data?.config_error;
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
 
   const logout = async () => {
     try {
@@ -70,6 +79,14 @@ export function Layout() {
         </button>
       </header>
       <div className="relative flex flex-1">
+        {menuOpen && (
+          <div
+            data-testid="sidebar-backdrop"
+            aria-hidden="true"
+            onClick={() => setMenuOpen(false)}
+            className="absolute inset-0 z-30 bg-black/50 md:hidden"
+          />
+        )}
         <aside
           id="sidebar"
           className={`${menuOpen ? "block" : "hidden"} absolute inset-y-0 left-0 z-40 w-56 border-r border-slate-800 bg-slate-950 md:static md:block`}

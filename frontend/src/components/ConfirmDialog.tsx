@@ -79,6 +79,7 @@ function DialogContent({
           <div className="flex justify-end gap-2">
             <button
               type="button"
+              autoFocus={requireText === undefined}
               onClick={onCancel}
               className="rounded px-4 py-2 text-sm text-slate-300 hover:bg-slate-700"
             >

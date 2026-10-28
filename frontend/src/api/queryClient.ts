@@ -6,6 +6,7 @@ export const queryKeys = {
   setupStatus: ["setup-status"],
   me: ["me"],
   dashboard: ["dashboard"],
+  instances: ["instances"],
 } as const;
 
 export function createQueryClient(): QueryClient {

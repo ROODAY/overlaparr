@@ -82,6 +82,62 @@ describe("App routing", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("config.yaml: bad indentation");
   });
 
+  it("closes the mobile sidebar with the backdrop or Escape", async () => {
+    server.use(status(false), authenticated, dashboard());
+    const user = userEvent.setup();
+    renderAt("/");
+    const menu = await screen.findByRole("button", { name: "Menu" });
+
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByTestId("sidebar-backdrop"));
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("sidebar-backdrop")).not.toBeInTheDocument();
+
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("redirects /login to the dashboard when already signed in", async () => {
+    server.use(status(false), authenticated, dashboard());
+    renderAt("/login");
+    expect(await screen.findByText("Dashboard — coming soon")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("returns to the setup wizard after signing in from it", async () => {
+    let loggedIn = false;
+    server.use(
+      http.get("*/api/v1/setup/status", () =>
+        HttpResponse.json({
+          needs_user: false,
+          plex_connected: false,
+          home_server_set: false,
+          instances_count: 0,
+        }),
+      ),
+      http.get("*/api/v1/auth/me", () =>
+        loggedIn
+          ? HttpResponse.json({ principal: "admin" })
+          : HttpResponse.json({ detail: "Not authenticated" }, { status: 401 }),
+      ),
+      http.post("*/api/v1/auth/login", () => {
+        loggedIn = true;
+        return HttpResponse.json({ username: "admin" });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/setup");
+    await screen.findByRole("heading", { name: "Sign in" });
+    await user.type(screen.getByLabelText("Username"), "admin");
+    await user.type(screen.getByLabelText("Password"), "secret");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("heading", { name: "Sign in with Plex" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/setup");
+  });
+
   it("logs in and lands on the dashboard", async () => {
     let loggedIn = false;
     server.use(
