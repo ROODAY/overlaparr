@@ -37,6 +37,8 @@ class FakePlexConnection:
             yield items[start : start + page_size]
 
     def episodes(self, show_rating_key: str) -> list[PlexEpisodeRow]:
+        if self._cfg.get("episodes_unreachable"):
+            raise PlexUnreachable(f"{self._name} episode fetch failed")
         return list(self._cfg.get("episodes", {}).get(show_rating_key, []))
 
 
@@ -50,6 +52,7 @@ class FakePlexGateway:
       unreachable: bool                   connect() raises PlexUnreachable
       relay: bool                         connection reports via_relay=True
       fail_after_pages: int | None        iter_items raises PlexUnreachable after N pages
+      episodes_unreachable: bool          episodes() raises PlexUnreachable
       owned: bool                         (default True)
     ``delay`` is seconds slept before yielding each page (index-budget tests).
     Server machine_id is ``"id-<name>"``.

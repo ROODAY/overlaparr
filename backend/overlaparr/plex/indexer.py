@@ -21,6 +21,7 @@ from overlaparr.domain.guids import parse_guids
 from overlaparr.domain.quality import parse_plex_resolution
 from overlaparr.plex.gateway import (
     PlexConnection,
+    PlexEpisodeRow,
     PlexGateway,
     PlexItemRow,
     PlexServerInfo,
@@ -285,7 +286,8 @@ def ensure_episodes(
 
     Returns ``(rows, fresh)``. Cached rows all fetched at/after ``scan_started_at``
     are returned without refetching (fresh=True). When ``conn`` is None or the fetch
-    fails, the cached rows (possibly empty) are returned with fresh=False. A
+    fails, the cached rows (possibly empty) are returned with fresh=False and the
+    session is left untouched; a failed DB write is rolled back and re-raised. A
     successful fetch atomically replaces the show's cached episodes, keeping one row
     per (season, episode): best resolution, then size.
     """
@@ -305,11 +307,30 @@ def ensure_episodes(
     if conn is None:
         return rows, False
     try:
-        fetched = conn.episodes(show_rating_key)
-    except PlexUnreachable as exc:
-        log.info("episode fetch failed: server=%s show=%s (%s)", server_id, show_rating_key, exc)
+        new_rows = _episode_rows(conn.episodes(show_rating_key), server_id, show_rating_key)
+    except Exception as exc:  # noqa: BLE001 - any fetch/parse failure: episodes not fetched
+        log.info("episode fetch failed: server=%s show=%s (%s)", server_id, show_rating_key,
+                 _err(exc))
         return rows, False
+    try:
+        db.execute(
+            delete(IndexEpisode).where(
+                IndexEpisode.server_id == server_id,
+                IndexEpisode.show_rating_key == show_rating_key,
+            )
+        )
+        db.add_all(new_rows)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return new_rows, True
 
+
+def _episode_rows(
+    fetched: Iterable[PlexEpisodeRow], server_id: str, show_rating_key: str
+) -> list[IndexEpisode]:
+    """One row per (season, episode): best resolution, then size."""
     now = utcnow()
     best: dict[tuple[int, int], IndexEpisode] = {}
     for e in fetched:
@@ -325,13 +346,4 @@ def ensure_episodes(
         key = (e.season, e.episode)
         if key not in best or _rank(row) > _rank(best[key]):
             best[key] = row
-    new_rows = list(best.values())
-    db.execute(
-        delete(IndexEpisode).where(
-            IndexEpisode.server_id == server_id,
-            IndexEpisode.show_rating_key == show_rating_key,
-        )
-    )
-    db.add_all(new_rows)
-    db.commit()
-    return new_rows, True
+    return list(best.values())

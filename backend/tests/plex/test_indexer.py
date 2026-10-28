@@ -310,6 +310,37 @@ def test_ensure_episodes_failure_returns_cached(factory):
         assert (rows, fresh) == ([], False)
 
 
+def test_ensure_episodes_any_fetch_error_is_not_fresh_and_leaves_session_clean(factory):
+    add_servers(factory, "a")
+    start = datetime.now(UTC)
+    with factory() as db:
+        class Broken:
+            def episodes(self, key):
+                raise ValueError("unexpected payload")
+
+        rows, fresh = ensure_episodes(db, Broken(), "id-a", "s1", start)
+        assert (rows, fresh) == ([], False)
+        assert not db.new and not db.dirty
+        db.add(IndexEpisode(server_id="id-a", show_rating_key="s2", season=1, episode=1,
+                            fetched_at=start))
+        db.commit()  # session still usable
+
+
+def test_ensure_episodes_write_failure_rolls_back(factory, monkeypatch):
+    conn = _conn(factory, [ep(1, 1)])
+    start = datetime.now(UTC) - timedelta(seconds=1)
+    with factory() as db:
+        def fail_commit():
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+        with pytest.raises(RuntimeError):
+            ensure_episodes(db, conn, "id-a", "s1", start)
+        monkeypatch.undo()
+        assert not db.new  # rolled back: no half-written episodes pending
+        assert db.scalars(select(IndexEpisode)).all() == []
+
+
 def test_connect_server_none_when_unreachable(factory):
     servers = add_servers(factory, "a", "b")
     gw = FakePlexGateway({"a": {"unreachable": True}})

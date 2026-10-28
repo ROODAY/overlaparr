@@ -225,6 +225,7 @@ class ScanEngine:
             return connections[sid]
 
         computed: list[ComputedFinding] = []
+        unfetched: set[tuple[str, int, str]] = set()
         ignored_items: set[tuple[str, int]] = set()
         for n, inst in enumerate(enabled):
             if not instance_ok[inst.id]:
@@ -240,7 +241,7 @@ class ScanEngine:
             try:
                 computed += match_instance_series(
                     db, clients[inst.id], inst.id, [i for i in items if i not in ignored],
-                    show_index, server_status, keep_relevant, started, connect,
+                    show_index, server_status, keep_relevant, started, connect, unfetched,
                 )
             except ArrError as e:
                 # Missing episode data would look like losses: marking the instance not ok
@@ -253,7 +254,7 @@ class ScanEngine:
         self._progress(scan_id, "reconcile")
         result = reconcile(
             db, computed, scan_id, server_status, instance_ok,
-            {i.id for i in cfg.instances}, ignored_items, now=started,
+            {i.id for i in cfg.instances}, ignored_items, now=started, unfetched=unfetched,
         )
 
         ctx = ScanContext(scan_id, db, cfg, server_status, instance_ok, result, clients,

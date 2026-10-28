@@ -470,3 +470,35 @@ def test_series_covered_not_wanted_non_actioned_resolved(db):
     db.commit()
     res = run(db, [], scan_id=2, now=NOW, **SON)
     assert res.resolved_ids == [f.id]
+
+
+def test_unfetched_live_server_copies_kept_and_never_lost(db):
+    f = _series_finding(db, _episode(1), _episode(2))
+    res = reconcile(db, [], 2, ONLINE, SON["ok"], SON["conf"], set(), now=NOW,
+                    unfetched={("sonarr", 5, "s1")})
+    f = finding(db, arr_id=5, instance="sonarr")
+    assert res.lost_ids == [] and res.updated_ids == [f.id]
+    assert f.lifecycle == "active"
+    assert [(c.server_id, c.episode_arr_id, c.stale) for c in copies(db, f)] == [("s1", 1, True)]
+
+
+def test_unfetched_live_server_copies_kept_beside_other_server(db):
+    f = _series_finding(db, _episode(1), _episode(2), covered=(1, 2))
+    # s1 not read this scan; s2 still has episode 2
+    computed = [cf(copy("s2", ep=2), instance="sonarr", arr_id=5, kind="series",
+                   relevant=[1, 2])]
+    res = reconcile(db, computed, 2, ONLINE, SON["ok"], SON["conf"], set(), now=NOW,
+                    unfetched={("sonarr", 5, "s1")})
+    f = finding(db, arr_id=5, instance="sonarr")
+    assert res.lost_ids == [] and f.lifecycle == "active"
+    got = sorted((c.server_id, c.episode_arr_id, c.stale) for c in copies(db, f))
+    assert got == [("s1", 1, True), ("s1", 2, True), ("s2", 2, False)]
+    assert (f.covered_count, f.coverage) == (2, "full")
+
+
+def test_offline_server_copies_rebuilt_from_cache_not_duplicated(db):
+    track(db)
+    run(db, [cf(copy("s2"))])
+    run(db, [cf(copy("s2", stale=True))], scan_id=2, status={"s1": "online", "s2": "offline"})
+    f = finding(db)
+    assert [(c.server_id, c.stale) for c in copies(db, f)] == [("s2", True)]

@@ -119,12 +119,18 @@ def reconcile(
     configured_instances: set[str],
     ignored_items: set[tuple[str, int]],
     now: datetime | None = None,
+    unfetched: set[tuple[str, int, str]] = frozenset(),  # type: ignore[assignment]
 ) -> ReconcileResult:
-    """Apply one scan's computed findings to the DB in a single transaction."""
+    """Apply one scan's computed findings to the DB in a single transaction.
+
+    ``unfetched``: (instance_id, arr_id, server_id) whose episodes could not be read
+    from a live server this scan. That server is treated as unreachable for that item:
+    its previous copies are kept (stale) and never count towards a loss.
+    """
     try:
         result = _reconcile(
             db, computed, scan_id, server_status, instance_ok, configured_instances,
-            ignored_items, now or utcnow(),
+            ignored_items, now or utcnow(), set(unfetched),
         )
         db.commit()
         return result
@@ -142,6 +148,7 @@ def _reconcile(
     configured_instances: set[str],
     ignored_items: set[tuple[str, int]],
     now: datetime,
+    unfetched: set[tuple[str, int, str]],
 ) -> ReconcileResult:
     result = ReconcileResult()
     _purge_instances(db, configured_instances)
@@ -151,6 +158,10 @@ def _reconcile(
 
     def reachable(server_id: str) -> bool:
         return server_status.get(server_id) in _LIVE
+
+    def fetched(f: Finding, server_id: str) -> bool:
+        """Reachable and, for this item, actually read this scan."""
+        return reachable(server_id) and (f.instance_id, f.arr_id, server_id) not in unfetched
 
     existing = {
         (f.instance_id, f.arr_id, f.type): f
@@ -179,6 +190,7 @@ def _reconcile(
         key = (cf.instance_id, cf.arr_id, cf.type)
         seen.add(key)
         f = existing.get(key)
+        kept: list[FindingCopy] = []
         if f is None:
             f = Finding(
                 instance_id=cf.instance_id, arr_id=cf.arr_id, kind=cf.kind, type=cf.type,
@@ -191,7 +203,12 @@ def _reconcile(
             new_findings.append(f)
         else:
             for c in old_copies.pop(f.id, []):
-                db.delete(c)
+                if (f.instance_id, f.arr_id, c.server_id) in unfetched:
+                    # Live server not read for this item: keep its last-known copies.
+                    c.stale = True
+                    kept.append(c)
+                else:  # rebuilt from this scan's matches (offline servers: cached index)
+                    db.delete(c)
             f.lifecycle = "active"
             f.last_seen_scan_id = scan_id
             result.updated_ids.append(f.id)
@@ -214,7 +231,7 @@ def _reconcile(
             for c in cf.copies
         ]
         db.add_all(rows)
-        _summarize(f, rows, server_ignores.get(f.id, set()))
+        _summarize(f, rows + kept, server_ignores.get(f.id, set()))
         if (f.instance_id, f.arr_id) in ignored_items:
             f.review_state = "ignored"
 
@@ -238,7 +255,7 @@ def _reconcile(
             # Copies and summary columns are kept as the last-known state.
             for c in prior:
                 c.stale = True
-            if all(reachable(c.server_id) for c in prior):
+            if all(fetched(f, c.server_id) for c in prior):
                 f.lifecycle = "lost"
                 result.lost_ids.append(f.id)
             else:

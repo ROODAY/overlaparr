@@ -10,7 +10,15 @@ from sqlalchemy import select
 
 from overlaparr.arr.snapshot import make_client
 from overlaparr.config.store import ConfigStore
-from overlaparr.db.models import Finding, FindingCopy, IndexItem, ScanRun, TrackedEpisode
+from overlaparr.db.models import (
+    ActionLog,
+    Finding,
+    FindingCopy,
+    IndexItem,
+    PendingEvent,
+    ScanRun,
+    TrackedEpisode,
+)
 from overlaparr.db.session import init_db, make_engine, make_sessionmaker
 from overlaparr.plex.gateway import PlexEpisodeRow, PlexItemRow
 from overlaparr.scan.engine import ScanAlreadyRunning, ScanContext, ScanEngine
@@ -60,11 +68,11 @@ def mock_radarr(movies, tags=()):
     respx.get("http://radarr/api/v3/tag").respond(json=list(tags))
 
 
-def mock_sonarr(series, episodes):
+def mock_sonarr(series, episodes, tags=()):
     """``episodes``: series id -> list of Sonarr episode dicts (or an HTTP status to fail)."""
     respx.get("http://sonarr/api/v3/series").respond(json=series)
     respx.get("http://sonarr/api/v3/qualityprofile").respond(json=PROFILES)
-    respx.get("http://sonarr/api/v3/tag").respond(json=[])
+    respx.get("http://sonarr/api/v3/tag").respond(json=list(tags))
     for sid, eps in episodes.items():
         route = respx.get("http://sonarr/api/v3/episode", params={"seriesId": sid})
         if isinstance(eps, int):
@@ -352,3 +360,101 @@ def test_disabling_a_server_keeps_its_findings_active(env):
     with env.factory() as db:
         copies = list(db.scalars(select(FindingCopy).where(FindingCopy.finding_id == after.id)))
     assert copies and all(c.stale for c in copies)
+
+
+# ----- episode fetch failure on a live server (never looks like "copies gone") -----
+
+LOSS_ON = {"remonitor": True, "remove_exclusion": True, "quality_profile_id": 1,
+           "search": True}
+DUPE_TAG = {"id": 9, "label": "dupe-elsewhere"}
+
+
+def _tv_env(env, servers):
+    env.gateway.servers.update(servers)
+    env.configure(instances=[{**SONARR, "loss_handling": LOSS_ON}], tags={"enabled": True})
+
+
+def _tagged_series():
+    return {**sonarr_series(5, 100), "tags": [9]}
+
+
+def _with_safety_hooks(env):
+    from overlaparr.actions.tags import sync_tags
+    from overlaparr.automation.runner import run_rules
+    from overlaparr.loss import handle_losses
+    from overlaparr.notify.events import dispatch_after_scan
+
+    engine = env.engine()
+    for hook in (sync_tags, handle_losses, run_rules, dispatch_after_scan):
+        engine.register_post_hook(hook)
+    return engine
+
+
+def _copies(env, finding_id):
+    with env.factory() as db:
+        return list(db.scalars(select(FindingCopy).where(FindingCopy.finding_id == finding_id)
+                               .order_by(FindingCopy.server_id)))
+
+
+def _writes():
+    return [c.request.method for c in respx.calls if c.request.method != "GET"]
+
+
+@respx.mock
+def test_live_server_episode_fetch_failure_does_not_lose_finding(env):
+    show = {"items": [show_row(20, 100)], "episodes": {"20": [plex_ep(20, 1, 1, 1001)]}}
+    _tv_env(env, {"other": show})
+    mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    assert env.run().status == "ok"
+    [before] = env.findings()
+    assert [c.server_id for c in _copies(env, before.id)] == ["id-other"]
+    with env.factory() as db:  # an Overlaparr action on record, so loss handling would act
+        db.add(ActionLog(actor="ui", instance_id="s1", instance_name="Sonarr",
+                         finding_id=before.id, arr_id=5, item_title="Show 5",
+                         action="unmonitor", scope={"scope": "episodes", "ids": [1]},
+                         prior_state={"monitored": {"1": True}}, result="ok",
+                         message="", undoable=True))
+        db.commit()
+
+    env.gateway.servers["other"]["episodes_unreachable"] = True
+    respx.reset()
+    mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    run = env.run(_with_safety_hooks(env))
+    assert run.status == "ok", run.error
+    assert run.summary["servers"] == {"id-other": "online"}
+    assert run.summary["counts"]["lost"] == 0
+    assert run.summary["hook_errors"] == []
+    [after] = env.findings()
+    assert after.id == before.id and after.lifecycle == "active"
+    copies = _copies(env, after.id)
+    assert [(c.server_id, c.episode_arr_id) for c in copies] == [("id-other", 1)]
+    assert all(c.stale for c in copies)
+    assert _writes() == []  # no untag, no re-monitor, no profile change, no search
+    with env.factory() as db:
+        lost = db.scalars(select(PendingEvent).where(PendingEvent.kind == "finding_lost"))
+        assert lost.all() == []
+        assert [r.action for r in db.scalars(select(ActionLog))] == ["unmonitor"]
+
+
+@respx.mock
+def test_live_server_episode_fetch_failure_keeps_its_copies_beside_other_server(env):
+    _tv_env(env, {
+        "other": {"items": [show_row(20, 100)], "episodes": {"20": [plex_ep(20, 1, 1, 1001)]}},
+        "second": {"items": [show_row(30, 100)], "episodes": {"30": [plex_ep(30, 1, 1, 1001)]}},
+    })
+    mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    assert env.run().status == "ok"
+    [before] = env.findings()
+    assert [c.server_id for c in _copies(env, before.id)] == ["id-other", "id-second"]
+
+    env.gateway.servers["other"]["episodes_unreachable"] = True
+    respx.reset()
+    mock_sonarr([_tagged_series()], {5: [sonarr_ep(1, 5, 1001)]}, tags=[DUPE_TAG])
+    run = env.run(_with_safety_hooks(env))
+    assert run.status == "ok", run.error
+    assert run.summary["hook_errors"] == []
+    [after] = env.findings()
+    assert after.id == before.id and after.lifecycle == "active" and after.coverage == "full"
+    copies = _copies(env, after.id)
+    assert [(c.server_id, c.stale) for c in copies] == [("id-other", True), ("id-second", False)]
+    assert _writes() == []
