@@ -34,6 +34,7 @@ GENERATED_SECRETS = ("session_secret", "app_api_key")
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 NOTIFY_SECRET_FIELDS = ("password", "webhook_url", "url", "urls")
+NOTIFY_SECRET_MAPS = ("headers",)  # every value is a secret; the keys stay visible
 _ID_LISTS = (("rules",), ("instances",), ("notifications", "connections"))
 _HEADER = (
     "Overlaparr configuration.\n"
@@ -69,6 +70,10 @@ def notify_secret_key(conn_id: str, field: str) -> str:
     return f"notify_{conn_id}_{field}"
 
 
+def notify_header_secret_key(conn_id: str, header: str) -> str:
+    return f"notify_{conn_id}_header_{header}"
+
+
 def _secret_key(path: tuple) -> str | None:
     """Secret key for a field path (list items are addressed by their id)."""
     if path == ("plex", "token"):
@@ -81,6 +86,12 @@ def _secret_key(path: tuple) -> str | None:
         and path[3] in NOTIFY_SECRET_FIELDS
     ):
         return notify_secret_key(path[2], path[3])
+    if (
+        len(path) == 5
+        and path[:2] == ("notifications", "connections")
+        and path[3] == "headers"
+    ):
+        return notify_header_secret_key(path[2], path[4])
     return None
 
 
@@ -254,7 +265,18 @@ def _digest(path: Path) -> str | None:
 def _atomic_write(path: Path, data: bytes, *, backup: bool = False, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
+    # Create with the final mode so a secrets file is never briefly world-readable.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp, flags, 0o666 if mode is None else mode)
+    try:
+        if mode is not None and hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)  # a leftover .tmp keeps its old mode under O_CREAT
+        with os.fdopen(fd, "wb") as f:
+            fd = -1
+            f.write(data)
+    finally:
+        if fd != -1:
+            os.close(fd)
     if mode is not None:
         os.chmod(tmp, mode)
     if backup and path.exists():
@@ -400,6 +422,10 @@ class ConfigStore:
                 return
             self._current = cfg
         self._notify(cfg)
+
+    def secret_keys(self) -> list[str]:
+        with self._lock:
+            return [str(k) for k in self._secrets]
 
     def secret_values(self) -> list[str]:
         """Every resolved secret string (for log redaction)."""

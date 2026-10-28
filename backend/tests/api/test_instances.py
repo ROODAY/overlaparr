@@ -102,3 +102,30 @@ def test_delete_instance_removes_secret(authed, tmp_path):
     authed.delete(f"/api/v1/instances/{inst['id']}")
     assert authed.app.state.store.get_secret(key_name) is None
     assert KEY not in (tmp_path / "secrets.yaml").read_text(encoding="utf-8")
+
+
+@respx.mock
+def test_masked_key_not_reused_for_a_new_url(authed):
+    inst = _create(authed)
+    evil = respx.get("http://evil:7878/api/v3/system/status").respond(json={"version": "5"})
+    r = authed.post("/api/v1/instances/test", json={
+        "type": "radarr", "url": "http://evil:7878", "api_key": MASK, "id": inst["id"]})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Re-enter the API key for the new URL"
+    assert not evil.called
+
+    r = authed.put(f"/api/v1/instances/{inst['id']}",
+                   json={**inst, "url": "http://evil:7878", "api_key": MASK})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Re-enter the API key for the new URL"
+    stored = authed.app.state.store.current.instances[0]
+    assert stored.url == "http://radarr:7878"
+
+    # Same URL keeps the key; a new URL with the key typed again is fine.
+    ok = respx.get("http://radarr:7878/api/v3/system/status").respond(json={"version": "5"})
+    r = authed.post("/api/v1/instances/test", json={
+        "type": "radarr", "url": "http://radarr:7878", "api_key": MASK, "id": inst["id"]})
+    assert r.json()["ok"] is True and ok.called
+    r = authed.put(f"/api/v1/instances/{inst['id']}",
+                   json={**inst, "url": "http://radarr2:7878", "api_key": KEY})
+    assert r.status_code == 200, r.text

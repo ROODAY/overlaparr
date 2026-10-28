@@ -48,7 +48,7 @@ def _secrets(conn: NotificationConnection) -> list[str]:
     if isinstance(conn, DiscordConn):
         vals = [conn.webhook_url]
     elif isinstance(conn, WebhookConn):
-        vals = [conn.url]
+        vals = [conn.url, *conn.headers.values()]
     elif isinstance(conn, AppriseConn):
         vals = list(conn.urls)
     else:

@@ -238,3 +238,27 @@ def test_load_invalid_without_good_config_falls_back(paths):
     assert store.reload_from_disk() is True
     assert store.error is None
     assert store.current.scan.page_size == 42
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_secrets_tmp_file_is_never_world_readable(paths, monkeypatch):
+    import os
+
+    from overlaparr.config import store as store_mod
+
+    seen = {}
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if str(dst).endswith("secrets.yaml"):
+            seen["mode"] = stat.S_IMODE(os.stat(src).st_mode)
+        real_replace(src, dst)
+
+    old_umask = os.umask(0o022)
+    try:
+        monkeypatch.setattr(store_mod.os, "chmod", lambda *a, **k: None)  # no after-the-fact fix
+        monkeypatch.setattr(store_mod.os, "replace", replace)
+        make_store(paths)
+    finally:
+        os.umask(old_umask)
+    assert seen["mode"] == 0o600

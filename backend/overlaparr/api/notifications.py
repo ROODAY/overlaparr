@@ -25,6 +25,7 @@ from overlaparr.config.store import (
     NOTIFY_SECRET_FIELDS,
     ConfigStore,
     mask_secrets,
+    notify_header_secret_key,
     notify_secret_key,
 )
 from overlaparr.db.models import NotificationLog
@@ -49,10 +50,45 @@ def _has_mask(value: Any) -> bool:
     return value == MASK or (isinstance(value, list) and MASK in value)
 
 
+def _masked_copy(existing: dict[str, Any]) -> dict[str, Any]:
+    """``existing`` as GET returns it: secrets (and header values) replaced by MASK."""
+    out = dict(existing)
+    for field in NOTIFY_SECRET_FIELDS:
+        if out.get(field) is not None:
+            out[field] = _mask(out[field])
+    if isinstance(out.get("headers"), dict):
+        out["headers"] = {k: MASK for k in out["headers"]}
+    return out
+
+
+def _unmask_headers(data: dict[str, Any], existing: dict[str, Any] | None) -> bool:
+    """Swap masked header values for the stored ones (per name); True if any was masked."""
+    headers = data.get("headers")
+    if not isinstance(headers, dict):
+        return False
+    kept = (existing or {}).get("headers") or {}
+    masked = False
+    out = {}
+    for name, value in headers.items():
+        if value == MASK:
+            if name not in kept:
+                raise HTTPException(status_code=422,
+                                    detail=f"headers.{name} must be entered again")
+            value, masked = kept[name], True
+        out[name] = value
+    data["headers"] = out
+    return masked
+
+
 def _build(conn_id: str, data: dict[str, Any],
            existing: dict[str, Any] | None = None) -> NotificationConnection:
-    """Validate a connection; masked secrets keep the stored value from ``existing``."""
+    """Validate a connection; masked secrets keep the stored value from ``existing``.
+
+    A stored secret is only reused while it still goes to the same destination:
+    a changed email host or webhook URL needs the password/headers again.
+    """
     data = {k: v for k, v in data.items() if k not in READ_ONLY}
+    reused: set[str] = set()
     for field in NOTIFY_SECRET_FIELDS:
         value = data.get(field)
         if not _has_mask(value):
@@ -61,6 +97,14 @@ def _build(conn_id: str, data: dict[str, Any],
         if kept is None or value != _mask(kept):
             raise HTTPException(status_code=422, detail=f"{field} must be entered again")
         data[field] = kept
+        reused.add(field)
+    if _unmask_headers(data, existing):
+        reused.add("headers")
+    if existing is not None:
+        if "password" in reused and data.get("host") != existing.get("host"):
+            raise HTTPException(status_code=422, detail="Re-enter the password for the new host")
+        if "headers" in reused and data.get("url") != existing.get("url"):
+            raise HTTPException(status_code=422, detail="Re-enter the headers for the new URL")
     try:
         return _ADAPTER.validate_python({**data, "id": conn_id})
     except ValidationError as e:
@@ -86,6 +130,12 @@ def _drop_unused_secrets(store: ConfigStore, conn_id: str,
         key = notify_secret_key(conn_id, field)
         if getattr(conn, field, None) is None and store.get_secret(key) is not None:
             store.delete_secret(key)
+    headers = getattr(conn, "headers", None) or {}
+    keep = {notify_header_secret_key(conn_id, name) for name in headers}
+    prefix = notify_header_secret_key(conn_id, "")
+    for key in store.secret_keys():
+        if key.startswith(prefix) and key not in keep:
+            store.delete_secret(key)
 
 
 def _replace(store: ConfigStore, conn_id: str,
@@ -109,6 +159,7 @@ def _scrub(conn: NotificationConnection, text: str) -> str:
     for field in NOTIFY_SECRET_FIELDS:
         value = getattr(conn, field, None)
         values.extend(value if isinstance(value, list) else [value] if value else [])
+    values.extend(v for v in (getattr(conn, "headers", None) or {}).values() if v)
     for value in sorted(values, key=len, reverse=True):
         text = text.replace(value, "***")
     return redact(text)
@@ -158,7 +209,9 @@ def patch_connection(conn_id: str, body: dict[str, Any] = Body(...),
         model = _TYPES.get(body.get("type", existing["type"]))
         # On a type change keep only the fields the new type has; validation
         # then demands its required ones from the body.
-        base = {k: v for k, v in existing.items() if model is None or k in model.model_fields}
+        # Stored secrets enter masked, so _build applies the same reuse rules as PUT.
+        base = {k: v for k, v in _masked_copy(existing).items()
+                if model is None or k in model.model_fields}
         return _build(conn_id, {**base, **body}, existing)
 
     return _replace(store, conn_id, make)

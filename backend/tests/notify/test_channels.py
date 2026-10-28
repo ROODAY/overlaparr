@@ -176,3 +176,14 @@ def test_retry_degenerate_args_never_raise(db):
     assert send_with_retry(db, conn, msg(), "x", attempts=0, backoff=()) is False
     assert send_with_retry(db, conn, msg(), "x", attempts=2, backoff=()) is False
     assert len(db.scalars(select(NotificationLog)).all()) == 2
+
+
+@respx.mock
+def test_own_header_values_scrubbed_from_webhook_error():
+    url = "https://example.com/h/plain"
+    respx.post(url).mock(side_effect=httpx.ConnectError("refused; sent Bearer hdrval-98765 x"))
+    conn = WebhookConn(id="w", name="w", type="webhook", url=url,
+                       headers={"X-Thing": "hdrval-98765"})
+    with pytest.raises(NotifyError) as ei:
+        send(conn, msg())
+    assert "hdrval-98765" not in str(ei.value)

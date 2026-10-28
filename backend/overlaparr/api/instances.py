@@ -53,6 +53,15 @@ def _build(**data: Any) -> InstanceConfig:
         raise HTTPException(status_code=422, detail=validation_detail(e)) from None
 
 
+NEW_URL_NEEDS_KEY = "Re-enter the API key for the new URL"
+
+
+def _reuse_key_for(existing: InstanceConfig, inst: InstanceConfig) -> None:
+    """A stored key is only reused against the URL it was entered for."""
+    if inst.url != existing.url:
+        raise HTTPException(status_code=422, detail=NEW_URL_NEEDS_KEY)
+
+
 def _error(e: ArrError, api_key: str) -> str:
     msg = e.message.replace(api_key, "***") if api_key else e.message
     return redact(msg)
@@ -83,10 +92,14 @@ def create_instance(body: InstanceIn, store: ConfigStore = Depends(get_store)):
 @router.post("/test")
 def test_instance(body: InstanceTest, request: Request, store: ConfigStore = Depends(get_store)):
     api_key = body.api_key
+    existing = None
     if api_key == MASK and body.id:
-        api_key = _find(store.current, body.id).api_key
+        existing = _find(store.current, body.id)
+        api_key = existing.api_key
     inst = _build(id=body.id or "test", name="test", type=body.type, url=body.url,
                   api_key=api_key)
+    if existing is not None:
+        _reuse_key_for(existing, inst)
     try:
         status = _call(request, inst, lambda c: c.status())
     except ArrError as e:
@@ -98,9 +111,12 @@ def test_instance(body: InstanceTest, request: Request, store: ConfigStore = Dep
 def update_instance(instance_id: str, body: InstanceIn, store: ConfigStore = Depends(get_store)):
     existing = _find(store.current, instance_id)
     data = body.model_dump()
-    if data["api_key"] == MASK:
+    reused = data["api_key"] == MASK
+    if reused:
         data["api_key"] = existing.api_key
     inst = _build(id=instance_id, **data)
+    if reused:
+        _reuse_key_for(existing, inst)
 
     def mutate(c: AppConfig) -> None:
         idx = next((n for n, i in enumerate(c.instances) if i.id == instance_id), None)
