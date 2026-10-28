@@ -52,7 +52,8 @@ def _client_for(ctx: ScanContext) -> Callable:
 # ----- hold detection ---------------------------------------------------------
 
 
-def _remonitored(db: Session, f: Finding, row: ActionLog) -> bool:
+def _remonitored(ctx: ScanContext, f: Finding, row: ActionLog) -> bool:
+    db = ctx.db
     ids = [int(k) for k, was in (row.prior_state.get("monitored") or {}).items() if was is True]
     if not ids:
         return False
@@ -63,6 +64,8 @@ def _remonitored(db: Session, f: Finding, row: ActionLog) -> bool:
         return item is not None and f.arr_id in ids and item.monitored
     if row.scope.get("scope") != "episodes":
         return False  # series-level monitoring is never changed by automation
+    if (f.instance_id, f.arr_id) not in ctx.refreshed_series:
+        return False  # episode snapshot not re-read this scan: it proves nothing
     return db.scalar(select(TrackedEpisode.id).where(
         TrackedEpisode.instance_id == f.instance_id,
         TrackedEpisode.episode_arr_id.in_(ids),
@@ -74,8 +77,8 @@ def clear_hold(db: Session, cfg: AppConfig, finding_id: int,
                actor: Literal["ui", "auto"] = "ui") -> ActionLog:
     """Lift a finding's automation hold and log a marker row.
 
-    Hold detection ignores automatic actions logged before the latest marker, so a
-    cleared hold stays cleared until automation changes monitoring again.
+    Hold detection ignores actions logged before the latest marker, so a
+    cleared hold stays cleared until Overlaparr changes monitoring again.
     """
     f = db.get(Finding, finding_id)
     if f is None:
@@ -98,7 +101,11 @@ def clear_hold(db: Session, cfg: AppConfig, finding_id: int,
 
 
 def detect_manual_changes(ctx: ScanContext) -> list[int]:
-    """Hold findings whose latest automatic unmonitor/delete was re-monitored by the user."""
+    """Hold findings whose latest Overlaparr unmonitor/delete was re-monitored by the user.
+
+    The baseline is the tool's last recorded action, from the UI or a rule (spec §14).
+    Exclusions have no snapshot to compare against, so only monitoring is checked.
+    """
     db = ctx.db
     cleared: dict[int, int] = {}
     for finding_id, row_id in db.execute(select(ActionLog.finding_id, ActionLog.id).where(
@@ -106,9 +113,10 @@ def detect_manual_changes(ctx: ScanContext) -> list[int]:
     )):
         cleared[finding_id] = max(row_id, cleared.get(finding_id, 0))
     rows = db.scalars(select(ActionLog).where(
-        ActionLog.actor == "auto",
+        ActionLog.actor.in_(("ui", "auto")),
         ActionLog.result == "ok",
         ActionLog.undone_at.is_(None),
+        ActionLog.undo_of_id.is_(None),
         ActionLog.action.in_(("unmonitor", "delete")),
         ActionLog.finding_id.is_not(None),
     ).order_by(ActionLog.id.desc()))
@@ -124,7 +132,7 @@ def detect_manual_changes(ctx: ScanContext) -> list[int]:
         f = db.get(Finding, finding_id)
         if f is None or f.automation_hold or ctx.instance_ok.get(f.instance_id) is not True:
             continue
-        if _remonitored(db, f, row):
+        if _remonitored(ctx, f, row):
             f.automation_hold = True
             held.append(f.id)
     if held:
@@ -296,8 +304,10 @@ def _run_rule(ctx: ScanContext, cfg: AppConfig, rule: Rule, preview: bool,
         req = _request(rule, f, m)
         if _already_done(db, f, req):
             continue
-        written.append(execute(db, cfg, req, "auto", rule=rule, scan_id=ctx.scan_id,
-                               dry_run=dry_run, client_for=client_for))
+        row = execute(db, cfg, req, "auto", rule=rule, scan_id=ctx.scan_id, dry_run=dry_run,
+                      client_for=client_for, record_noop=False)
+        if row is not None:  # target state already held: no write, no log row (§14)
+            written.append(row)
     return True
 
 

@@ -8,7 +8,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from overlaparr.actions._ops import FILES_GONE
-from overlaparr.actions.executor import REVIEW_ACTIONS, find_instance
+from overlaparr.actions.executor import REVIEW_ACTIONS, find_instance, record_monitored
 from overlaparr.arr.client import ArrError
 from overlaparr.arr.radarr import RadarrClient
 from overlaparr.arr.sonarr import SonarrClient
@@ -100,6 +100,7 @@ def undo(
         undoable=False,
         undo_of_id=orig.id,
     )
+    kind = None
     if orig.action in REVIEW_ACTIONS:
         if finding is None:
             raise UndoError("Finding no longer exists")
@@ -108,6 +109,7 @@ def undo(
         inst = find_instance(cfg, orig.instance_id)
         if inst is None:
             raise UndoError(f"Instance '{orig.instance_name}' no longer configured")
+        kind = "movie" if inst.type == "radarr" else "series"
         client = client_for(inst, dry_run=False)
         try:
             row.result, row.message = "ok", _undo_arr(orig, client, inst.type == "radarr")
@@ -117,6 +119,10 @@ def undo(
             client.close()
     if row.result == "ok":
         orig.undone_at = utcnow()
+        if orig.action in ("unmonitor", "delete"):
+            monitored = orig.prior_state.get("monitored") or {}
+            record_monitored(db, orig.instance_id, kind, orig.action, orig.scope,
+                             {int(k): bool(v) for k, v in monitored.items()})
         # Hold only when a person reverses automation, not when automation undoes itself.
         if orig.actor == "auto" and actor != "auto" and finding is not None:
             finding.automation_hold = True

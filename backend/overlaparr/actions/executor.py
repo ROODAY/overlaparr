@@ -57,8 +57,31 @@ def _scope(req: ActionRequest) -> dict:
     return scope
 
 
+def record_monitored(db: Session, instance_id: str, kind: str, action: str, scope: dict,
+                     states: dict[int, bool]) -> None:
+    """Mirror a successful monitoring write into the tracked snapshot.
+
+    Later rules and hold detection read ``monitored`` from the snapshot; without this
+    it would still show the state from before the write until the item is re-read.
+    Ids are items for movies and series-level unmonitor, episodes otherwise (as undo).
+    """
+    if not states:
+        return
+    if kind == "movie" or (action == "unmonitor" and scope.get("scope") == "item"):
+        rows = db.scalars(select(TrackedItem).where(
+            TrackedItem.instance_id == instance_id, TrackedItem.arr_id.in_(list(states))))
+        for r in rows:
+            r.monitored = states[r.arr_id]
+        return
+    for e in db.scalars(select(TrackedEpisode).where(
+        TrackedEpisode.instance_id == instance_id,
+        TrackedEpisode.episode_arr_id.in_(list(states)),
+    )):
+        e.monitored = states[e.episode_arr_id]
+
+
 def _review(db: Session, finding: Finding, req: ActionRequest, row: ActionLog,
-            dry_run: bool) -> tuple[bool, str | None]:
+            dry_run: bool) -> tuple[bool, str | None, bool]:
     if req.action == "ignore_server":
         if not req.server_id:
             raise ActionError("ignore_server requires a server_id")
@@ -67,14 +90,14 @@ def _review(db: Session, finding: Finding, req: ActionRequest, row: ActionLog,
             FindingServerIgnore.server_id == req.server_id,
         ))
         if existing is not None:
-            return False, "server already ignored"
+            return False, "server already ignored", False
         if not dry_run:
             db.add(FindingServerIgnore(finding_id=finding.id, server_id=req.server_id))
-        return True, None
+        return True, None, True
     row.prior_state = {"review_state": finding.review_state}
     if not dry_run:
         finding.review_state = REVIEW_TARGET[req.action]
-    return True, None
+    return True, None, True
 
 
 def _validate_arr(db: Session, finding: Finding, inst: InstanceConfig | None,
@@ -111,7 +134,7 @@ def validate_request(db: Session, cfg: AppConfig, finding: Finding, req: ActionR
 
 def _arr(db: Session, cfg: AppConfig, finding: Finding, inst: InstanceConfig | None,
          req: ActionRequest, row: ActionLog, dry_run: bool,
-         client_for: Callable) -> tuple[bool, str | None]:
+         client_for: Callable) -> tuple[bool, str | None, bool]:
     _validate_arr(db, finding, inst, req)
     client = client_for(inst, dry_run=dry_run)
     ctx = OpContext(cfg=cfg, finding=finding, client=client, scope=req.scope,
@@ -130,7 +153,7 @@ def _arr(db: Session, cfg: AppConfig, finding: Finding, inst: InstanceConfig | N
         finding.review_state = "actioned"
         if req.action == "delete" and req.delete_mode == "remove_item":
             finding.lifecycle = "removed"
-    return outcome.undoable, outcome.message
+    return outcome.undoable, outcome.message, outcome.changed
 
 
 def execute(
@@ -142,11 +165,14 @@ def execute(
     scan_id: int | None = None,
     dry_run: bool = False,
     client_for: Callable = make_client,
-) -> ActionLog:
+    record_noop: bool = True,
+) -> ActionLog | None:
     """Run the action and return its committed log row; callers check ``row.result``.
 
     *arr and validation errors never raise: they produce a ``result="error"`` row.
     Only an unknown finding raises ``ActionError`` (there is nothing to log against).
+    With ``record_noop=False`` (automation) an action that found the target state
+    already in place writes no row and returns None.
     """
     finding = db.get(Finding, req.finding_id)
     if finding is None:
@@ -172,18 +198,26 @@ def execute(
     )
     try:
         if req.action in REVIEW_ACTIONS:
-            undoable, message = _review(db, finding, req, row, dry_run)
+            undoable, message, changed = _review(db, finding, req, row, dry_run)
         else:
-            undoable, message = _arr(db, cfg, finding, inst, req, row, dry_run, client_for)
+            undoable, message, changed = _arr(db, cfg, finding, inst, req, row, dry_run,
+                                              client_for)
     except (ArrError, ActionError) as e:
         db.rollback()  # discard any half-applied DB change; the row is still transient
         row.result, row.message = "error", redact(str(e))
         # A monitoring change applied before the failure stays undoable.
         row.undoable = not dry_run and bool(row.prior_state.get("monitored"))
     else:
+        if not changed and not record_noop:
+            db.rollback()
+            return None
         row.result = "dry_run" if dry_run else "ok"
         row.undoable = undoable and not dry_run
         row.message = message
+    if not dry_run and req.action in EPISODE_SCOPE_ACTIONS:
+        # prior_state lists only writes that returned, so a partial failure is mirrored too.
+        applied = {int(k): False for k in (row.prior_state.get("monitored") or {})}
+        record_monitored(db, finding.instance_id, finding.kind, req.action, row.scope, applied)
     db.add(row)
     db.commit()
     return row

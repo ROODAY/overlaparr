@@ -238,3 +238,18 @@ def test_undo_partial_delete_failure_restores_monitoring(db, cfg):
     assert body(mon) == {"episodeIds": [501], "monitored": True}
     db.refresh(done)
     assert done.undone_at is not None
+
+
+@respx.mock
+def test_undo_updates_tracked_snapshot(db, cfg):
+    from overlaparr.db.models import TrackedEpisode
+
+    f = add_finding(db, instance="s1", arr_id=5, kind="series", title="Severance")
+    add_episodes(db, eps=((501, False, None), (502, False, None)))
+    orig = log_row(db, f, "unmonitor", {"monitored": {"501": True}},
+                   scope={"scope": "episodes", "episode_ids": [501]})
+    respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    assert undo(db, cfg, orig.id).result == "ok"
+    db.expire_all()
+    got = {e.episode_arr_id: e.monitored for e in db.scalars(select(TrackedEpisode))}
+    assert got == {501: True, 502: False}

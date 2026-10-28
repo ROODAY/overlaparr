@@ -461,3 +461,33 @@ def test_live_server_episode_fetch_failure_keeps_its_copies_beside_other_server(
     copies = _copies(env, after.id)
     assert [(c.server_id, c.stale) for c in copies] == [("id-other", True), ("id-second", False)]
     assert not writes.called
+
+
+@respx.mock
+def test_auto_unmonitor_then_series_stops_matching_sets_no_hold(env):
+    from overlaparr.automation.runner import run_rules
+
+    env.gateway.servers["other"] = {
+        "items": [show_row(20, 100)], "episodes": {"20": [plex_ep(20, 1, 1, 1001)]}}
+    env.configure(instances=[SONARR], rules=[{
+        "id": "ru1", "name": "R", "enabled": True, "action": "unmonitor", "wait_scans": 1}])
+    engine = env.engine()
+    engine.register_post_hook(run_rules)
+    mock_sonarr([sonarr_series(5, 100)], {5: [sonarr_ep(1, 5, 1001)]})
+    respx.get("http://sonarr/api/v3/episode", params={"episodeIds": "1"}).respond(
+        json=[sonarr_ep(1, 5, 1001)])
+    put = respx.put("http://sonarr/api/v3/episode/monitor").respond(json=[])
+    assert env.run(engine).status == "ok"
+    assert put.called
+    with env.factory() as db:
+        assert [r.result for r in db.scalars(select(ActionLog))] == ["ok"]
+
+    env.gateway.servers["other"]["items"] = []  # show removed from the friend's server
+    respx.reset()
+    mock_sonarr([sonarr_series(5, 100)], {})
+    writes = _catch_writes()
+    run = env.run(engine)
+    assert run.status == "ok", run.error
+    [f] = env.findings()
+    assert f.automation_hold is False
+    assert not writes.called

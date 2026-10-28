@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -53,6 +53,8 @@ class ScanContext:
     clients: dict[str, ArrClient]
     store: ConfigStore
     dry_run: bool = False
+    # (instance_id, series arr_id) whose Sonarr episodes were re-read this scan.
+    refreshed_series: set[tuple[str, int]] = field(default_factory=set)
 
 
 PostHook = Callable[[ScanContext], None]
@@ -226,6 +228,7 @@ class ScanEngine:
 
         computed: list[ComputedFinding] = []
         unfetched: set[tuple[str, int, str]] = set()
+        refreshed: set[tuple[str, int]] = set()
         ignored_items: set[tuple[str, int]] = set()
         for n, inst in enumerate(enabled):
             if not instance_ok[inst.id]:
@@ -242,6 +245,7 @@ class ScanEngine:
                 computed += match_instance_series(
                     db, clients[inst.id], inst.id, [i for i in items if i not in ignored],
                     show_index, server_status, keep_relevant, started, connect, unfetched,
+                    refreshed,
                 )
             except ArrError as e:
                 # Missing episode data would look like losses: marking the instance not ok
@@ -258,7 +262,7 @@ class ScanEngine:
         )
 
         ctx = ScanContext(scan_id, db, cfg, server_status, instance_ok, result, clients,
-                          self.store)
+                          self.store, refreshed_series=refreshed)
         hook_errors = self._run_hooks(ctx)
 
         active = db.scalar(

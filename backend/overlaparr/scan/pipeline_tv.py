@@ -31,6 +31,7 @@ def match_instance_series(
     scan_started: datetime,
     connect: Callable[[str], PlexConnection | None],
     unfetched: set[tuple[str, int, str]] | None = None,
+    refreshed: set[tuple[str, int]] | None = None,
 ) -> list[ComputedFinding]:
     """Findings for one Sonarr instance's (non-ignored) series.
 
@@ -43,6 +44,7 @@ def match_instance_series(
     no copies; ``(instance_id, arr_id, server_id)`` is added to ``unfetched`` so
     reconcile keeps that server's previous copies (stale) instead of treating them as
     gone. Servers that are not live keep matching against their cached episodes.
+    Series whose Sonarr episodes were re-read are added to ``refreshed``.
     """
     by_id = {s.arr_id: s for s in series if s.kind == "series"}
     findings: list[ComputedFinding] = []
@@ -50,6 +52,8 @@ def match_instance_series(
         item = by_id[arr_id]
         episodes, skipped = read_series_episodes(client, arr_id)
         persist_episodes(db, instance_id, arr_id, episodes, keep_ids=skipped)
+        if refreshed is not None:
+            refreshed.add((instance_id, arr_id))
         tracked = list(
             db.scalars(
                 select(TrackedEpisode).where(

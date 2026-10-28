@@ -488,3 +488,68 @@ def test_ignore_server_requires_server(db, cfg):
     f = add_finding(db)
     row = execute(db, cfg, ActionRequest(f.id, "ignore_server"), "ui")
     assert row.result == "error"
+
+
+def _tracked(db):
+    from overlaparr.db.models import TrackedEpisode, TrackedItem
+
+    db.expire_all()
+    eps = {e.episode_arr_id: e.monitored for e in db.scalars(select(TrackedEpisode))}
+    items = {(i.instance_id, i.arr_id): i.monitored for i in db.scalars(select(TrackedItem))}
+    return eps, items
+
+
+@respx.mock
+def test_unmonitor_episodes_updates_tracked_snapshot(db, cfg):
+    f = series_finding(db)  # tracked: 501 monitored, 502 monitored, 503 not
+    respx.get(f"{S}/api/v3/episode").respond(json=[episode(501, True, 9001)])
+    respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    row = execute(db, cfg, ActionRequest(f.id, "unmonitor", scope="episodes",
+                                         episode_ids=[501]), "auto")
+    assert row.result == "ok"
+    eps, _ = _tracked(db)
+    assert eps == {501: False, 502: True, 503: False}
+
+
+@respx.mock
+def test_unmonitor_movie_updates_tracked_item(db, cfg):
+    f = add_finding(db)
+    from overlaparr.db.models import TrackedItem
+    db.scalar(select(TrackedItem)).monitored = True
+    db.commit()
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie(monitored=True))
+    respx.put(f"{R}/api/v3/movie/editor").respond(json=[])
+    assert execute(db, cfg, ActionRequest(f.id, "unmonitor"), "ui").result == "ok"
+    assert _tracked(db)[1] == {("r1", 1): False}
+
+
+@respx.mock
+def test_delete_files_updates_tracked_episode_monitoring(db, cfg):
+    f = series_finding(db)
+    respx.get(f"{S}/api/v3/episode").respond(json=[episode(501, True, 9001)])
+    respx.get(f"{S}/api/v3/episodefile").respond(json=[episode_file(9001)])
+    respx.put(f"{S}/api/v3/episode/monitor").respond(json=[])
+    respx.delete(f"{S}/api/v3/episodefile/bulk").respond(json={})
+    row = execute(db, cfg, ActionRequest(f.id, "delete", scope="episodes",
+                                         episode_ids=[501]), "auto")
+    assert row.result == "ok", row.message
+    assert _tracked(db)[0][501] is False
+
+
+@respx.mock
+def test_dry_run_leaves_tracked_snapshot(db, cfg):
+    f = series_finding(db)
+    respx.get(f"{S}/api/v3/episode").respond(json=[episode(501, True, 9001)])
+    row = execute(db, cfg, ActionRequest(f.id, "unmonitor", scope="episodes",
+                                         episode_ids=[501]), "auto", dry_run=True)
+    assert row.result == "dry_run"
+    assert _tracked(db)[0][501] is True
+
+
+@respx.mock
+def test_auto_noop_writes_no_log_row(db, cfg):
+    f = add_finding(db)
+    respx.get(f"{R}/api/v3/movie/1").respond(json=movie(monitored=False))
+    row = execute(db, cfg, ActionRequest(f.id, "unmonitor"), "auto", record_noop=False)
+    assert row is None
+    assert db.scalars(select(ActionLog)).all() == []

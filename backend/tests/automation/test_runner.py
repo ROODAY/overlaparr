@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 import respx
 from sqlalchemy import select
@@ -82,7 +83,7 @@ class Env:
         self.opened += clients.values()
         return ScanContext(scan_id, self.db, cfg, status or {"A": "online", "B": "online"},
                            ok or {"r1": True, "s1": True}, ReconcileResult(), clients,
-                           self.store, dry_run)
+                           self.store, dry_run, refreshed_series={("s1", 5)})
 
     def run(self, scan_id, **kw) -> list[ActionLog]:
         return run_rules(self.ctx(scan_id, **kw))
@@ -579,3 +580,52 @@ def test_rule_added_during_scan_waits_for_next_scan(db, make_env):
 
     env.store.update(add)
     assert run_rules(ctx) == [] and not put.called
+
+
+@respx.mock
+def test_hold_detection_skips_series_not_refreshed_this_scan(db, make_env):
+    env = make_env([rule()])
+    f = remonitor_setup(db)
+    for ep in db.scalars(select(TrackedEpisode)):
+        ep.monitored = True  # looks re-monitored, but this snapshot was not read this scan
+    db.commit()
+    ctx = env.ctx(2)
+    ctx.refreshed_series = set()
+    assert detect_manual_changes(ctx) == []
+    db.refresh(f)
+    assert not f.automation_hold
+    ctx = env.ctx(3)  # refreshed this scan: now it counts
+    assert detect_manual_changes(ctx) == [f.id]
+
+
+@respx.mock
+def test_ui_unmonitor_then_user_remonitor_sets_hold(db, make_env):
+    env = make_env([rule()])
+    f = movie_finding(db, monitored=True)  # the user re-monitored it in Radarr
+    db.add(ActionLog(actor="ui", instance_id="r1", instance_name="My Radarr", finding_id=f.id,
+                     arr_id=1, item_title="The Matrix", action="unmonitor",
+                     scope={"scope": "item"}, prior_state={"monitored": {"1": True}},
+                     result="ok", undoable=True))
+    db.commit()
+    put = mock_movie_unmonitor()
+    assert env.run(2) == []
+    db.refresh(f)
+    assert f.automation_hold
+    assert not put.called and len(logs(db)) == 1
+
+
+@respx.mock
+def test_second_rule_noop_writes_no_log_row(db, make_env):
+    env = make_env([rule("ru1", action="tag"), rule("ru2", action="tag")])
+    movie_finding(db)
+    tags = respx.get(f"{R}/api/v3/tag")
+    tags.side_effect = [httpx.Response(200, json=[]),
+                        httpx.Response(200, json=[{"id": 4, "label": "dupe-elsewhere"}])]
+    respx.post(f"{R}/api/v3/tag").respond(json={"id": 4, "label": "dupe-elsewhere"})
+    movie_route = respx.get(f"{R}/api/v3/movie/1")
+    movie_route.side_effect = [httpx.Response(200, json=movie()),
+                               httpx.Response(200, json=movie(tags=[4]))]
+    edit = respx.put(f"{R}/api/v3/movie/editor").respond(json=[])
+    rows = env.run(1)
+    assert [(r.rule_id, r.action, r.result) for r in rows] == [("ru1", "tag", "ok")]
+    assert len(logs(db)) == 1 and edit.call_count == 1
