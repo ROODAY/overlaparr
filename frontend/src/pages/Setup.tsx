@@ -6,6 +6,7 @@ import { queryKeys } from "../api/queryClient";
 import type {
   Credentials,
   HomeResult,
+  Instance,
   LoginResult,
   Me,
   PlexConnected,
@@ -483,26 +484,88 @@ function HomeStep({ onDone }: { onDone: () => void }) {
 
 // ---------- Step 4: instance ----------
 
+const TYPE_LABEL = { sonarr: "Sonarr", radarr: "Radarr" } as const;
+
 function InstanceStep({ onDone }: { onDone: (added: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const instances = useQuery({
+    queryKey: queryKeys.instances,
+    queryFn: () => api.get<Instance[]>("/instances"),
+  });
+  const added = instances.data ?? [];
+  const [adding, setAdding] = useState(false);
+  // InstanceForm updates the instance it saved on later saves, so each new one gets a fresh form.
+  const [formKey, setFormKey] = useState(0);
+
+  const saved = (instance: Instance) => {
+    // Show it right away; the form's invalidation then refetches the list from the server.
+    queryClient.setQueryData<Instance[]>(queryKeys.instances, (old = []) =>
+      old.some((i) => i.id === instance.id) ? old : [...old, instance],
+    );
+    setAdding(false);
+  };
+
   return (
     <div>
-      <StepHeading>Add a Sonarr or Radarr instance</StepHeading>
+      <StepHeading>Add your Sonarr and Radarr instances</StepHeading>
       <p className="mb-4 mt-1 text-sm text-slate-400">
-        Overlaparr compares this instance's library with the other Plex servers. You can add more
-        later on the Instances page.
+        Overlaparr compares their libraries with the other Plex servers. You can add more later on
+        the Instances page.
       </p>
-      <InstanceForm
-        onSaved={() => onDone(true)}
-        actions={
+      {added.length > 0 && (
+        <ul aria-label="Added instances" className="mb-4 space-y-2">
+          {added.map((i) => (
+            <li
+              key={i.id}
+              className="flex items-center gap-2 rounded border border-slate-700 px-3 py-2 text-sm text-slate-200"
+            >
+              {i.name}
+              <span className="text-slate-400">{TYPE_LABEL[i.type]}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {added.length === 0 || adding ? (
+        <InstanceForm
+          key={formKey}
+          onSaved={saved}
+          actions={
+            added.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => onDone(false)}
+                className="ml-auto text-sm text-slate-400 hover:text-slate-200"
+              >
+                Skip for now
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAdding(false)}
+                className="ml-auto text-sm text-slate-400 hover:text-slate-200"
+              >
+                Cancel
+              </button>
+            )
+          }
+        />
+      ) : (
+        <div className="flex gap-3">
           <button
             type="button"
-            onClick={() => onDone(false)}
-            className="ml-auto text-sm text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              setFormKey((k) => k + 1);
+              setAdding(true);
+            }}
+            className={SECONDARY}
           >
-            Skip for now
+            Add another
           </button>
-        }
-      />
+          <button type="button" onClick={() => onDone(true)} className={PRIMARY}>
+            Continue
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -541,8 +604,8 @@ function FinishStep({ instanceAdded, pollMs }: { instanceAdded: boolean; pollMs:
   const finish = useMutation({
     mutationFn: startScan,
     onSuccess: (result) => {
-      // The running scan (started when the home server was chosen) read the config before the
-      // instance was added, so it won't cover it: wait for it to end, then scan again.
+      // A scan that was already running (e.g. a scheduled one) read the config before the
+      // instances were added, so it won't cover them: wait for it to end, then scan again.
       if (result === "already-running" && instanceAdded) setWaiting(true);
       else done();
     },
@@ -590,13 +653,13 @@ function FinishStep({ instanceAdded, pollMs }: { instanceAdded: boolean; pollMs:
       {waiting ? (
         <>
           <p role="status" className="mt-4 text-sm text-slate-300">
-            A scan is already running (started when you chose the home server) and doesn&apos;t
-            include your new instance — waiting for it to finish, then starting another…
+            A scan is already running and doesn&apos;t include your instances — waiting for it to
+            finish, then starting another…
           </p>
           {waitError && <Alert>{waitError}</Alert>}
           <p className="mt-3 text-xs text-amber-300">
-            If you go to the dashboard now, run a scan once the current one finishes so your new
-            instance is included.
+            If you go to the dashboard now, run a scan once the current one finishes so your
+            instances are included.
           </p>
           <button type="button" onClick={done} className={`mt-3 ${SECONDARY}`}>
             Go to dashboard now

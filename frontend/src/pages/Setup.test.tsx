@@ -1,11 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../api/queryClient";
-import type { SetupStatus } from "../api/types";
+import type { Instance, SetupStatus } from "../api/types";
+import { instanceFixture } from "../test/fixtures";
 import { server } from "../test/server";
 import { Setup } from "./Setup";
 
@@ -50,6 +51,7 @@ const SERVERS = [
 ];
 
 let status: SetupStatus;
+let instances: Instance[];
 
 function statusHandler() {
   return http.get("*/api/v1/setup/status", () => HttpResponse.json(status));
@@ -59,15 +61,20 @@ const loggedIn = http.get("*/api/v1/auth/me", () => HttpResponse.json({ principa
 const loggedOut = http.get("*/api/v1/auth/me", () =>
   HttpResponse.json({ detail: "Not authenticated" }, { status: 401 }),
 );
+const listInstances = http.get("*/api/v1/instances", () => HttpResponse.json(instances));
+let instancePosts = 0;
 const saveInstance = http.post("*/api/v1/instances", async ({ request }) => {
-  const body = (await request.json()) as Record<string, unknown>;
-  status = { ...status, instances_count: 1 };
-  return HttpResponse.json({ id: "i1", ...body, api_key: "********" });
+  instancePosts += 1;
+  const body = (await request.json()) as Omit<Instance, "id">;
+  const saved: Instance = { ...body, id: `i${instances.length + 1}`, api_key: "********" };
+  instances = [...instances, saved];
+  status = { ...status, instances_count: instances.length };
+  return HttpResponse.json(saved);
 });
 
-async function fillInstance(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByRole("heading", { name: "Add a Sonarr or Radarr instance" });
-  await user.type(screen.getByLabelText("Name"), "Sonarr");
+async function fillInstance(user: ReturnType<typeof userEvent.setup>, name = "Sonarr") {
+  await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
+  await user.type(screen.getByLabelText("Name"), name);
   await user.type(screen.getByLabelText("URL"), "http://sonarr:8989");
   await user.type(screen.getByLabelText("API key"), "key");
 }
@@ -91,6 +98,8 @@ function renderSetup(path = "/setup") {
 
 beforeEach(() => {
   status = { ...FRESH };
+  instances = [];
+  instancePosts = 0;
   vi.spyOn(window, "open").mockReturnValue(null);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -214,10 +223,11 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       refresh,
       http.put("*/api/v1/servers/home", async ({ request }) => {
         home = await request.json();
-        return HttpResponse.json({ home_server: "m-home", scan_id: 1 });
+        return HttpResponse.json({ home_server: "m-home", scan_id: null });
       }),
     );
     const user = userEvent.setup();
@@ -225,7 +235,7 @@ describe("Setup wizard", () => {
 
     await user.click(await screen.findByLabelText(/My Server/));
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(await screen.findByRole("heading", { name: "Add a Sonarr or Radarr instance" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" })).toBeInTheDocument();
     expect(home).toEqual({ machine_id: "m-home" });
   });
 
@@ -235,6 +245,7 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       http.post("*/api/v1/instances/test", async ({ request }) => {
         tested = await request.json();
         return HttpResponse.json({ ok: false, error: "401 Unauthorized: invalid API key" });
@@ -243,7 +254,7 @@ describe("Setup wizard", () => {
     const user = userEvent.setup();
     renderSetup();
 
-    await screen.findByRole("heading", { name: "Add a Sonarr or Radarr instance" });
+    await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
     await user.type(screen.getByLabelText("Name"), "Sonarr");
     await user.type(screen.getByLabelText("URL"), "http://sonarr:8989");
     await user.type(screen.getByLabelText("API key"), "bad-key");
@@ -260,11 +271,13 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       http.post("*/api/v1/instances/test", () => HttpResponse.json({ ok: true, version: "4.0.1" })),
       http.post("*/api/v1/instances", async ({ request }) => {
         saved = (await request.json()) as Record<string, unknown>;
+        instances = [instanceFixture({ id: "i1", name: "Radarr", type: "radarr" })];
         status = { ...status, instances_count: 1 };
-        return HttpResponse.json({ id: "i1", ...saved, api_key: "********" });
+        return HttpResponse.json(instances[0]);
       }),
       http.post("*/api/v1/scan", () => {
         scanned = true;
@@ -274,7 +287,7 @@ describe("Setup wizard", () => {
     const user = userEvent.setup();
     renderSetup();
 
-    await screen.findByRole("heading", { name: "Add a Sonarr or Radarr instance" });
+    await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
     await user.type(screen.getByLabelText("Name"), "Radarr");
     await user.selectOptions(screen.getByLabelText("Type"), "radarr");
     await user.type(screen.getByLabelText("URL"), "http://radarr:7878");
@@ -282,6 +295,7 @@ describe("Setup wizard", () => {
     await user.click(screen.getByRole("button", { name: "Test" }));
     expect(await screen.findByText(/Connected.*4\.0\.1/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
 
     await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
     expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
@@ -302,6 +316,7 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       saveInstance,
       http.post("*/api/v1/scan", () => {
         scanPosts += 1;
@@ -318,9 +333,15 @@ describe("Setup wizard", () => {
     renderSetup();
     await fillInstance(user);
     await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
     await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
 
-    expect(await screen.findByText(/doesn.t include your new instance/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "A scan is already running and doesn't include your instances — waiting for it to finish, then starting another…",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/home server/)).not.toBeInTheDocument();
     expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
     expect(statusPolls).toBe(3);
     expect(scanPosts).toBe(2);
@@ -331,6 +352,7 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       saveInstance,
       http.post("*/api/v1/scan", () =>
         HttpResponse.json({ detail: "Scan already running" }, { status: 409 }),
@@ -343,10 +365,70 @@ describe("Setup wizard", () => {
     renderSetup();
     await fillInstance(user);
     await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
     await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
     expect(await screen.findByText(/run a scan once the current one finishes/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Go to dashboard now" }));
     expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
+  });
+
+  it("adds several instances, each as a new one, then continues", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    let listFetches = 0;
+    let puts = 0;
+    server.use(
+      statusHandler(),
+      loggedIn,
+      http.get("*/api/v1/instances", () => {
+        listFetches += 1;
+        return HttpResponse.json(instances);
+      }),
+      saveInstance,
+      http.put("*/api/v1/instances/:id", () => {
+        puts += 1;
+        return HttpResponse.json({ detail: "unexpected" }, { status: 400 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderSetup();
+
+    expect(await screen.findByRole("button", { name: "Skip for now" })).toBeInTheDocument();
+    await fillInstance(user, "TV");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The list is the server's, refetched after the save.
+    const list = await screen.findByRole("list", { name: "Added instances" });
+    await waitFor(() => expect(listFetches).toBe(2));
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "TVSonarr",
+    ]);
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add another" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    expect(screen.getByLabelText("URL")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Name"), "Movies");
+    await user.selectOptions(screen.getByLabelText("Type"), "radarr");
+    await user.type(screen.getByLabelText("URL"), "http://radarr:7878");
+    await user.type(screen.getByLabelText("API key"), "key2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("list", { name: "Added instances" }))
+          .getAllByRole("listitem")
+          .map((li) => li.textContent),
+      ).toEqual(["TVSonarr", "MoviesRadarr"]),
+    );
+    expect(instancePosts).toBe(2);
+    expect(puts).toBe(0);
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByRole("button", { name: "Finish and run first scan" }),
+    ).toBeInTheDocument();
   });
 
   it("lets the instance step be skipped and treats an already running scan as fine", async () => {
@@ -354,12 +436,14 @@ describe("Setup wizard", () => {
     server.use(
       statusHandler(),
       loggedIn,
+      listInstances,
       http.post("*/api/v1/scan", () =>
         HttpResponse.json({ detail: "Scan already running" }, { status: 409 }),
       ),
     );
     const user = userEvent.setup();
     renderSetup();
+    expect(await screen.findByText(/add more later on the Instances page/)).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Skip for now" }));
     await user.click(await screen.findByRole("button", { name: "Finish and run first scan" }));
     expect(await screen.findByText("Dashboard page")).toBeInTheDocument();
