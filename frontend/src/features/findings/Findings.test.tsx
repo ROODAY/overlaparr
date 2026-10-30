@@ -292,7 +292,8 @@ describe("Findings", () => {
 
     await waitFor(() => expect(runs).toHaveLength(1));
     await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("page=2"));
-    expect(findingsQueries.at(-1)!.get("page")).toBeNull();
+    // The refetch for the new URL is recorded a moment after the URL changes.
+    await waitFor(() => expect(findingsQueries.at(-1)!.get("page")).toBeNull());
     expect(screen.getByText("1–2 of 2")).toBeInTheDocument();
   });
 

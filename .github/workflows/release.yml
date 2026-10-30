@@ -1,10 +1,12 @@
-# On a version tag (vX.Y.Z): run the test suites, then build and publish the image
-# to ghcr.io/rooday/overlaparr as X.Y.Z, X.Y and latest.
+# Every push to main and every pull request runs the test suites. A version tag (vX.Y.Z)
+# also builds and publishes the image to ghcr.io/rooday/overlaparr as X.Y.Z, X.Y and latest.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*.*.*"]
+  pull_request:
 
 permissions:
   contents: read
@@ -16,6 +18,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tag matches backend version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version=$(python3 -c "import tomllib; print(tomllib.load(open('backend/pyproject.toml', 'rb'))['project']['version'])")
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -49,6 +52,7 @@ jobs:
 
   image:
     needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
