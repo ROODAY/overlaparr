@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from overlaparr.api.deps import get_db, get_engine, get_store, update_config
 from overlaparr.config.schema import AppConfig, ServerOverride
 from overlaparr.config.store import ConfigStore
-from overlaparr.db.models import ScanRun, Server
+from overlaparr.db.models import Finding, Server
 from overlaparr.plex.gateway import PlexUnreachable
 from overlaparr.plex.indexer import refresh_servers
 from overlaparr.scan.engine import ScanAlreadyRunning, ScanEngine
@@ -101,16 +101,21 @@ def set_home(body: HomeIn, db: Session = Depends(get_db),
         delete_findings(db)
         db.commit()
 
-    def switch_if_never_scanned() -> bool:
-        # No scan has ever run (e.g. first setup): nothing to rebuild, just save the choice.
-        # Once a scan has run this stays False, so dropping the lock before start() is safe.
-        if db.scalar(select(ScanRun.id).limit(1)) is not None:
+    def switch_if_nothing_to_rebuild() -> bool:
+        # No findings and no indexed server (e.g. first setup, even after a scheduled scan
+        # failed as not configured): nothing was computed against a home, so just save the
+        # choice. Otherwise start() below purges and rebuilds under the lock again, so
+        # dropping it in between can at worst cost a rebuild, never skip one.
+        built = (db.scalar(select(Finding.id).limit(1)) is not None
+                 or db.scalar(select(Server.machine_id)
+                              .where(Server.last_indexed_at.is_not(None)).limit(1)) is not None)
+        if built:
             return False
         switch()
         return True
 
     try:
-        if engine.exclusive(switch_if_never_scanned):
+        if engine.exclusive(switch_if_nothing_to_rebuild):
             return {"home_server": body.machine_id, "scan_id": None}
     except ScanAlreadyRunning:
         raise HTTPException(status_code=409, detail=SCAN_RUNNING) from None

@@ -1,6 +1,8 @@
 from sqlalchemy import func, select
 
-from overlaparr.db.models import ActionLog, Finding, FindingCopy, RuleState, ScanRun, Server
+from overlaparr.db.models import (
+    ActionLog, Finding, FindingCopy, RuleState, ScanRun, Server, utcnow,
+)
 from overlaparr.plex.gateway import PlexUnreachable
 from tests.api.conftest import wait_idle
 
@@ -28,10 +30,10 @@ def _count(app, model):
         return db.scalar(select(func.count()).select_from(model))
 
 
-def _seed_run(app):
-    # A past scan: changing the home server from now on purges and rebuilds.
+def _seed_indexed(app, machine_id):
+    # A server indexed by a past scan: changing the home server now rebuilds.
     with app.state.db_factory() as db:
-        db.add(ScanRun(status="ok", trigger="manual"))
+        db.get(Server, machine_id).last_indexed_at = utcnow()
         db.commit()
 
 
@@ -152,7 +154,6 @@ def test_change_home_server_start_race(authed, monkeypatch):
     _connect(authed)
     authed.post("/api/v1/servers/refresh")
     _seed_findings(app)
-    _seed_run(app)
     # A scan grabbed the lock first: the switch never runs, nothing changes.
     monkeypatch.setattr(app.state.scan_engine, "start", lambda trigger, before=None: None)
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
@@ -166,7 +167,7 @@ def test_change_home_server_holds_scan_lock(authed, monkeypatch):
     app = authed.app
     _connect(authed)
     authed.post("/api/v1/servers/refresh")
-    _seed_run(app)
+    _seed_findings(app)
     engine, store = app.state.scan_engine, app.state.store
     seen = []
     real_update = store.update
@@ -232,6 +233,32 @@ def test_first_home_choice_refused_while_scanning(authed):
     finally:
         lock.release()
     assert _count(app, ScanRun) == 0
+
+
+def test_first_home_choice_ignores_unconfigured_run(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    # A scheduled tick before setup finished leaves a failed run but nothing to rebuild.
+    with app.state.db_factory() as db:
+        db.add(ScanRun(status="failed", error="Plex not configured", trigger="schedule"))
+        db.commit()
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+    assert r.status_code == 200 and r.json()["scan_id"] is None
+    assert _count(app, ScanRun) == 1
+    assert app.state.store.current.plex.home_server == "id-home"
+
+
+def test_home_choice_rebuilds_when_a_server_was_indexed(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    _seed_indexed(app, "id-friend")
+    assert _count(app, Finding) == 0
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+    assert r.status_code == 200 and isinstance(r.json()["scan_id"], int)
+    wait_idle(app)
+    assert _count(app, ScanRun) == 1
 
 
 def _home_row(c):
