@@ -8,8 +8,8 @@
 
 services:
   overlaparr:
-    image: overlaparr:latest
-    build: .
+    image: ghcr.io/rooday/overlaparr:latest
+    # To build from a checkout instead, replace the image line with: build: .
     container_name: overlaparr
     environment:
       - PUID=1000

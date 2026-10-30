@@ -25,6 +25,9 @@ libraries changes until you act on a finding yourself, or explicitly opt an auto
    docker compose up -d
    ```
 
+   The image is published at `ghcr.io/rooday/overlaparr` (`latest`, or a pinned version such
+   as `0.1.0`). To update: `docker compose pull && docker compose up -d`.
+
 3. Open `http://<host>:8686` and follow the first-run wizard:
    1. Create the admin account.
    2. Sign in with Plex, or paste a Plex token.
@@ -169,3 +172,6 @@ a message in an unrecognised shape can still appear, so treat the log as sensiti
   ```
 
 - Image: `docker build -t overlaparr:dev .`
+- Release: bump `version` in `backend/pyproject.toml`, commit, then push a matching tag
+  (`git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0`). The Release workflow runs both
+  test suites and publishes `ghcr.io/rooday/overlaparr` as `0.2.0`, `0.2` and `latest`.

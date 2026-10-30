@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # --- Frontend build -----------------------------------------------------------
-FROM node:22-alpine AS web
+# The bundle is platform-independent: build it natively, not under emulation.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
