@@ -65,7 +65,7 @@ export function Servers() {
   const setHome = useMutation({
     mutationFn: (machineId: string) =>
       api.put<HomeResult>("/servers/home", { machine_id: machineId }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       for (const queryKey of [
         queryKeys.servers,
         queryKeys.dashboard,
@@ -74,7 +74,11 @@ export function Servers() {
       ]) {
         void queryClient.invalidateQueries({ queryKey });
       }
-      toast("Home server changed — a scan is rebuilding findings.");
+      toast(
+        result.scan_id === null
+          ? "Home server changed."
+          : "Home server changed — a scan is rebuilding findings.",
+      );
       setPendingHome(null);
     },
     onError: (e) => {
@@ -84,6 +88,14 @@ export function Servers() {
   });
 
   const label = (s: ServerRow) => s.label || s.name;
+
+  // A server never contacted has only the default status; don't claim it is offline.
+  const statusBadge = (s: ServerRow) =>
+    s.status !== "disabled" && s.last_attempt_at == null ? (
+      <Badge variant="neutral">not checked</Badge>
+    ) : (
+      <Badge variant={STATUS_VARIANT[s.status]}>{s.status}</Badge>
+    );
 
   return (
     <div>
@@ -191,18 +203,22 @@ export function Servers() {
                     )}
                   </td>
                   <td className="px-3 py-2">
-                    <Switch
-                      label={`Enable ${label(s)}`}
-                      checked={s.enabled}
-                      disabled={setEnabled.isPending}
-                      onChange={(enabled) => setEnabled.mutate({ id: s.machine_id, enabled })}
-                    />
+                    {/* the home server is never indexed, so it can't be switched off */}
+                    {!s.is_home && (
+                      <Switch
+                        label={`Enable ${label(s)}`}
+                        checked={s.enabled}
+                        disabled={setEnabled.isPending}
+                        onChange={(enabled) => setEnabled.mutate({ id: s.machine_id, enabled })}
+                      />
+                    )}
                   </td>
-                  <td className="px-3 py-2">
-                    <Badge variant={STATUS_VARIANT[s.status]}>{s.status}</Badge>
-                  </td>
+                  <td className="px-3 py-2">{statusBadge(s)}</td>
+                  {/* the home row's index data is left over from when it was a friend's server */}
                   <td className="px-3 py-2 text-slate-300">
-                    {s.last_indexed_at ? (
+                    {s.is_home ? (
+                      "—"
+                    ) : s.last_indexed_at ? (
                       <time dateTime={s.last_indexed_at} title={formatDateTime(s.last_indexed_at)}>
                         {formatRelative(s.last_indexed_at)}
                       </time>
@@ -211,13 +227,13 @@ export function Servers() {
                     )}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-                    {s.movie_count}
+                    {s.is_home ? "—" : s.movie_count}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-                    {s.show_count}
+                    {s.is_home ? "—" : s.show_count}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-                    {s.unmatchable_count}
+                    {s.is_home ? "—" : s.unmatchable_count}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-1">

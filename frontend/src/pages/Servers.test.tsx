@@ -33,7 +33,14 @@ let homes: { machine_id: string }[];
 
 beforeEach(() => {
   servers = [
-    serverRowFixture({ movie_count: 120, show_count: 30, unmatchable_count: 4 }),
+    // the home row keeps stale index data from when it was a friend's server
+    serverRowFixture({
+      last_indexed_at: "2026-10-19T08:00:00Z",
+      last_attempt_at: "2026-10-30T08:00:00Z",
+      movie_count: 120,
+      show_count: 30,
+      unmatchable_count: 4,
+    }),
     serverRowFixture({
       machine_id: "m-b",
       name: "Friend",
@@ -43,6 +50,7 @@ beforeEach(() => {
       status: "stale",
       reachability: "stale",
       last_indexed_at: "2026-10-20T08:00:00Z",
+      last_attempt_at: "2026-10-20T08:00:00Z",
       movie_count: 12,
       show_count: 2,
     }),
@@ -75,7 +83,7 @@ beforeEach(() => {
     http.put("*/api/v1/servers/home", async ({ request }) => {
       const body = (await request.json()) as { machine_id: string };
       homes.push(body);
-      return HttpResponse.json({ home_server: body.machine_id, scan_id: 99 });
+      return HttpResponse.json({ home_server: body.machine_id, scan_id: 5 });
     }),
   );
 });
@@ -94,10 +102,13 @@ describe("Servers", () => {
     expect(home.getByText("Home")).toBeInTheDocument();
     expect(home.queryByText("New")).not.toBeInTheDocument();
     expect(home.getByText("online")).toBeInTheDocument();
-    expect(home.getByText("Never")).toBeInTheDocument();
-    expect(home.getByText("120")).toBeInTheDocument();
-    expect(home.getByText("30")).toBeInTheDocument();
-    expect(home.getByText("4")).toBeInTheDocument();
+    // the home server isn't indexed: no last-indexed time, counts or enable switch
+    expect(home.getAllByText("—")).toHaveLength(4);
+    expect(home.queryByText(/ago/)).not.toBeInTheDocument();
+    expect(home.queryByText("120")).not.toBeInTheDocument();
+    expect(home.queryByText("30")).not.toBeInTheDocument();
+    expect(home.queryByText("4")).not.toBeInTheDocument();
+    expect(home.queryByRole("switch")).not.toBeInTheDocument();
 
     // label "" falls back to the server name
     const friend = row(/Friend/);
@@ -110,20 +121,49 @@ describe("Servers", () => {
     expect(home.queryByRole("button", { name: "Make home" })).not.toBeInTheDocument();
   });
 
+  it("shows never-contacted servers as not checked unless disabled", async () => {
+    servers = [
+      serverRowFixture({
+        machine_id: "m-n",
+        name: "Newcomer",
+        label: "",
+        is_home: false,
+        status: "offline",
+        reachability: "offline",
+      }),
+      serverRowFixture({
+        machine_id: "m-d",
+        name: "Switched",
+        label: "",
+        is_home: false,
+        enabled: false,
+        status: "disabled",
+        reachability: "offline",
+      }),
+    ];
+    renderWithProviders(<Servers />, { route: "/servers" });
+    await screen.findByText("Newcomer");
+
+    expect(row(/Newcomer/).getByText("not checked")).toBeInTheDocument();
+    expect(row(/Newcomer/).queryByText("offline")).not.toBeInTheDocument();
+    expect(row(/Switched/).getByText("disabled")).toBeInTheDocument();
+    expect(row(/Switched/).queryByText("not checked")).not.toBeInTheDocument();
+  });
+
   it("toggles a server off with a PATCH and refetches", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Servers />, { route: "/servers" });
-    await screen.findByText("MyPlex");
+    await screen.findByText("Friend");
 
-    await user.click(row(/MyPlex/).getByRole("switch", { name: "Enable MyPlex" }));
-    await waitFor(() => expect(patches).toEqual([{ id: "m-a", body: { enabled: false } }]));
+    await user.click(row(/Friend/).getByRole("switch", { name: "Enable Friend" }));
+    await waitFor(() => expect(patches).toEqual([{ id: "m-b", body: { enabled: false } }]));
     await waitFor(() =>
-      expect(row(/MyPlex/).getByRole("switch", { name: "Enable MyPlex" })).toHaveAttribute(
+      expect(row(/Friend/).getByRole("switch", { name: "Enable Friend" })).toHaveAttribute(
         "aria-checked",
         "false",
       ),
     );
-    expect(row(/MyPlex/).getByText("disabled")).toBeInTheDocument();
+    expect(row(/Friend/).getByText("disabled")).toBeInTheDocument();
   });
 
   it("renames a server with Enter", async () => {
@@ -168,6 +208,26 @@ describe("Servers", () => {
     expect(
       await screen.findByText("Home server changed — a scan is rebuilding findings."),
     ).toBeInTheDocument();
+  });
+
+  it("says nothing about a rebuild when the home change starts no scan", async () => {
+    server.use(
+      http.put("*/api/v1/servers/home", async ({ request }) => {
+        const body = (await request.json()) as { machine_id: string };
+        homes.push(body);
+        return HttpResponse.json({ home_server: body.machine_id, scan_id: null });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<Servers />, { route: "/servers" });
+    await screen.findByText("Friend");
+
+    await user.click(row(/Friend/).getByRole("button", { name: "Make home" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Change home server" }));
+    await waitFor(() => expect(homes).toEqual([{ machine_id: "m-b" }]));
+    expect(await screen.findByText("Home server changed.")).toBeInTheDocument();
+    expect(screen.queryByText(/a scan is rebuilding/)).not.toBeInTheDocument();
   });
 
   it("refreshes servers", async () => {
