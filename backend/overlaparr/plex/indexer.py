@@ -311,10 +311,13 @@ def index_servers(
 
 
 def mark_stale(db: Session, stale_after_hours: int, now: datetime) -> None:
-    """Servers not currently reachable whose index is older than the threshold → stale."""
+    """Servers not currently reachable whose index is older than the threshold → stale.
+
+    The home is never stale: it is not indexed, so it only reports its connect check.
+    """
     cutoff = now - timedelta(hours=stale_after_hours)
     for srv in db.scalars(select(Server)):
-        if srv.reachability in ("online", "degraded"):
+        if srv.is_home or srv.reachability in ("online", "degraded"):
             continue
         if srv.last_indexed_at is not None and srv.last_indexed_at < cutoff:
             srv.reachability = "stale"

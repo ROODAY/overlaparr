@@ -364,6 +364,20 @@ def test_mark_stale_after_48h(factory):
     assert got == {"id-old": "stale", "id-recent": "offline", "id-up": "online", "id-never": "partial"}
 
 
+def test_mark_stale_skips_home(factory):
+    add_servers(factory, "home", "a", home="home")
+    now = datetime(2026, 10, 26, 12, tzinfo=UTC)
+    with factory() as db:
+        for mid in ("id-home", "id-a"):
+            s = db.get(Server, mid)
+            s.reachability, s.last_indexed_at = "offline", now - timedelta(hours=100)
+        db.commit()
+        mark_stale(db, 48, now)
+    with factory() as db:
+        got = {s.machine_id: s.reachability for s in db.scalars(select(Server))}
+    assert got == {"id-home": "offline", "id-a": "stale"}
+
+
 def _conn(factory, episodes):
     gw = FakePlexGateway({"a": {"items": [show("s1", 1)], "episodes": {"s1": episodes}}})
     add_servers(factory, "a")
