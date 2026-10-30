@@ -28,6 +28,13 @@ def _count(app, model):
         return db.scalar(select(func.count()).select_from(model))
 
 
+def _seed_run(app):
+    # A past scan: changing the home server from now on purges and rebuilds.
+    with app.state.db_factory() as db:
+        db.add(ScanRun(status="ok", trigger="manual"))
+        db.commit()
+
+
 def test_refresh_requires_plex(authed):
     assert authed.post("/api/v1/servers/refresh").status_code == 409
 
@@ -63,7 +70,8 @@ def test_change_home_server_rebuilds(authed):
     authed.post("/api/v1/servers/refresh")
     assert authed.put("/api/v1/servers/home", json={"machine_id": "nope"}).status_code == 404
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
-    assert r.status_code == 200
+    assert r.status_code == 200 and r.json()["scan_id"] is None  # first choice: no scan
+    assert authed.post("/api/v1/scan").status_code in (200, 202)
     wait_idle(app)
     _seed_findings(app)
     runs_before = _count(app, ScanRun)
@@ -77,6 +85,7 @@ def test_change_home_server_rebuilds(authed):
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
     assert r.status_code == 200
     assert r.json()["home_server"] == "id-friend"
+    assert isinstance(r.json()["scan_id"], int)
     assert app.state.store.current.plex.home_server == "id-friend"
     assert _count(app, Finding) == 0
     with app.state.db_factory() as db:  # history kept, detached from the deleted finding
@@ -143,6 +152,7 @@ def test_change_home_server_start_race(authed, monkeypatch):
     _connect(authed)
     authed.post("/api/v1/servers/refresh")
     _seed_findings(app)
+    _seed_run(app)
     # A scan grabbed the lock first: the switch never runs, nothing changes.
     monkeypatch.setattr(app.state.scan_engine, "start", lambda trigger, before=None: None)
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
@@ -156,6 +166,7 @@ def test_change_home_server_holds_scan_lock(authed, monkeypatch):
     app = authed.app
     _connect(authed)
     authed.post("/api/v1/servers/refresh")
+    _seed_run(app)
     engine, store = app.state.scan_engine, app.state.store
     seen = []
     real_update = store.update
@@ -167,7 +178,60 @@ def test_change_home_server_holds_scan_lock(authed, monkeypatch):
     monkeypatch.setattr(store, "update", update)
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
     assert r.status_code == 200 and seen == [True]
+    assert isinstance(r.json()["scan_id"], int)
     wait_idle(app)
+
+
+def test_first_home_choice_starts_no_scan(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+    assert r.status_code == 200
+    assert r.json() == {"home_server": "id-home", "scan_id": None}
+    assert _count(app, ScanRun) == 0
+    assert app.state.store.current.plex.home_server == "id-home"
+    rows = {s["machine_id"]: s for s in authed.get("/api/v1/servers").json()}
+    assert rows["id-home"]["is_home"] is True
+    assert rows["id-friend"]["is_home"] is False
+    with app.state.db_factory() as db:
+        assert db.get(Server, "id-home").is_home is True
+        assert db.get(Server, "id-friend").is_home is False
+
+
+def test_first_home_choice_holds_scan_lock(authed, monkeypatch):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    engine, store = app.state.scan_engine, app.state.store
+    seen = []
+    real_update = store.update
+
+    def update(mutator):
+        seen.append(engine.running)  # the first choice is saved under the scan lock too
+        return real_update(mutator)
+
+    monkeypatch.setattr(store, "update", update)
+    r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+    assert r.status_code == 200 and seen == [True]
+    assert r.json()["scan_id"] is None
+    assert engine.running is False
+
+
+def test_first_home_choice_refused_while_scanning(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    lock = app.state.scan_engine._lock
+    lock.acquire()
+    try:
+        r = authed.put("/api/v1/servers/home", json={"machine_id": "id-home"})
+        assert r.status_code == 409
+        assert r.json()["detail"] == "A scan is running; try again when it finishes"
+        assert app.state.store.current.plex.home_server is None
+    finally:
+        lock.release()
+    assert _count(app, ScanRun) == 0
 
 
 def _home_row(c):

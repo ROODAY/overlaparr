@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from overlaparr.api.deps import get_db, get_engine, get_store, update_config
 from overlaparr.config.schema import AppConfig, ServerOverride
 from overlaparr.config.store import ConfigStore
-from overlaparr.db.models import Server
+from overlaparr.db.models import ScanRun, Server
 from overlaparr.plex.gateway import PlexUnreachable
 from overlaparr.plex.indexer import refresh_servers
-from overlaparr.scan.engine import ScanEngine
+from overlaparr.scan.engine import ScanAlreadyRunning, ScanEngine
 from overlaparr.scan.reconcile import delete_findings
 
 router = APIRouter(prefix="/servers", tags=["servers"])
@@ -101,6 +101,22 @@ def set_home(body: HomeIn, db: Session = Depends(get_db),
         delete_findings(db)
         db.commit()
 
+    def switch_if_never_scanned() -> bool:
+        # No scan has ever run (e.g. first setup): nothing to rebuild, just save the choice.
+        # Once a scan has run this stays False, so dropping the lock before start() is safe.
+        if db.scalar(select(ScanRun.id).limit(1)) is not None:
+            return False
+        switch()
+        return True
+
+    try:
+        if engine.exclusive(switch_if_never_scanned):
+            return {"home_server": body.machine_id, "scan_id": None}
+    except ScanAlreadyRunning:
+        raise HTTPException(status_code=409, detail=SCAN_RUNNING) from None
+    except Exception:
+        db.rollback()
+        raise
     try:
         scan_id = engine.start("manual", before=switch)
     except Exception:

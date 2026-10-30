@@ -522,3 +522,39 @@ def test_start_before_skipped_when_busy_and_failure_releases_lock(env):
     assert engine.running is False
     with env.factory() as db:
         assert db.scalars(select(ScanRun)).all() == []
+
+
+def test_exclusive_runs_under_lock(env):
+    engine = env.engine()
+    seen = []
+
+    def fn():
+        seen.append(engine.running)
+        return 42
+
+    assert engine.exclusive(fn) == 42
+    assert seen == [True]
+    assert engine.running is False
+
+
+def test_exclusive_raises_when_busy(env):
+    engine = env.engine()
+    called = []
+    engine._lock.acquire()
+    try:
+        with pytest.raises(ScanAlreadyRunning):
+            engine.exclusive(lambda: called.append(1))
+        assert called == []
+    finally:
+        engine._lock.release()
+
+
+def test_exclusive_releases_on_error(env):
+    engine = env.engine()
+
+    def boom():
+        raise RuntimeError("no")
+
+    with pytest.raises(RuntimeError):
+        engine.exclusive(boom)
+    assert engine.running is False

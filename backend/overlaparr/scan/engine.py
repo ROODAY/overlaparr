@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -30,6 +30,7 @@ from overlaparr.scan.reconcile import ReconcileResult, keep_keys, reconcile
 log = logging.getLogger(__name__)
 
 Trigger = Literal["schedule", "manual"]
+T = TypeVar("T")
 NOT_CONFIGURED = "Plex not configured"
 _LIVE = {"online", "degraded"}
 
@@ -126,6 +127,15 @@ class ScanEngine:
             self._lock.release()
             raise
         return scan_id
+
+    def exclusive(self, fn: Callable[[], T]) -> T:
+        """Run ``fn`` while holding the scan lock; raises ScanAlreadyRunning if busy."""
+        if not self._lock.acquire(blocking=False):
+            raise ScanAlreadyRunning()
+        try:
+            return fn()
+        finally:
+            self._lock.release()
 
     def run_sync(self, trigger: Trigger) -> int:
         """Run a whole scan in the calling thread; raises ScanAlreadyRunning if busy."""
