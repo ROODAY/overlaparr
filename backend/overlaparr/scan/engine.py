@@ -221,6 +221,7 @@ class ScanEngine:
             self.db_factory, gateway, targets, cfg.scan.server_timeout_seconds,
             cfg.scan.server_index_budget_seconds, cfg.scan.page_size,
             lambda name, n: self._progress(scan_id, "indexing", detail=name, done=n),
+            home_id=home,
         )
         db.expire_all()  # indexing committed through other sessions
         mark_stale(db, cfg.scan.stale_after_hours, utcnow())

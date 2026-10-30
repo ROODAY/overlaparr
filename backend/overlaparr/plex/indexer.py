@@ -215,6 +215,27 @@ def _record(
     return IndexResult(server_id, fetched.status, len(items), unmatchable, fetched.error)
 
 
+def _check_home(gateway: PlexGateway, info: PlexServerInfo, timeout: float) -> Status:
+    """Worker: connect-only reachability check of the home server (never indexed)."""
+    try:
+        conn = gateway.connect(info, timeout)
+    except Exception:  # noqa: BLE001 - any connect failure means offline
+        return "offline"
+    return "degraded" if conn.via_relay else "online"
+
+
+def _record_home(
+    db_factory: sessionmaker[Session], server_id: str, status: Status, now: datetime
+) -> None:
+    """Persist the home check; its index data and counts are left untouched."""
+    with db_factory() as db:
+        srv = db.get(Server, server_id)
+        if srv is not None:
+            srv.reachability = status
+            srv.last_attempt_at = now
+        db.commit()
+
+
 def index_servers(
     db_factory: sessionmaker[Session],
     gateway: PlexGateway,
@@ -223,15 +244,20 @@ def index_servers(
     budget_s: float,
     page_size: int,
     progress: Callable[[str, int], None],
+    home_id: str | None = None,
 ) -> dict[str, IndexResult]:
     """Index every non-home server concurrently, each within ``budget_s``.
 
     Workers only fetch into memory. Results are persisted from this thread as each
     worker completes, so a slow server never delays others. A worker still running
     at the deadline is cancelled and reported ``partial``; its data is discarded.
+    When ``home_id`` is given, the home server gets a connect-only check in the same
+    pool; its reachability is persisted but it is never indexed nor returned.
     """
-    targets = [(s.machine_id, s.name) for s in servers if not s.is_home]
-    if not targets:
+    targets = [
+        (s.machine_id, s.name) for s in servers if not s.is_home and s.machine_id != home_id
+    ]
+    if not targets and home_id is None:
         return {}
     started = time.monotonic()
     results: dict[str, IndexResult] = {}
@@ -244,8 +270,15 @@ def index_servers(
 
     cancel = threading.Event()
     pending: dict[Future[_Fetched], str] = {}
-    pool = ThreadPoolExecutor(max_workers=len(targets), thread_name_prefix="plex-index")
+    home_fut: Future[Status] | None = None
+    pool = ThreadPoolExecutor(max_workers=len(targets) + 1, thread_name_prefix="plex-index")
     try:
+        if home_id is not None:
+            home_info = discovered.get(home_id)
+            if home_info is None:
+                _record_home(db_factory, home_id, "offline", utcnow())
+            else:
+                home_fut = pool.submit(_check_home, gateway, home_info, timeout)
         for mid, _name in targets:
             info = discovered.get(mid)
             if info is None:
@@ -254,8 +287,13 @@ def index_servers(
             fut = pool.submit(_fetch_server, gateway, info, timeout, page_size, cancel, progress)
             pending[fut] = mid
         remaining = max(0.0, budget_s - (time.monotonic() - started))
+        waiting: list[Future] = [*pending, *([home_fut] if home_fut is not None else [])]
         try:
-            for fut in as_completed(list(pending), timeout=remaining):
+            for fut in as_completed(waiting, timeout=remaining):
+                if fut is home_fut:
+                    _record_home(db_factory, home_id, fut.result(), utcnow())
+                    home_fut = None
+                    continue
                 mid = pending.pop(fut)
                 results[mid] = _record(db_factory, mid, fut.result(), utcnow())
         except FuturesTimeout:
@@ -263,6 +301,8 @@ def index_servers(
     finally:
         cancel.set()
         pool.shutdown(wait=False, cancel_futures=True)
+    if home_fut is not None:  # still connecting at the deadline
+        _record_home(db_factory, home_id, "offline", utcnow())
     for mid in pending.values():
         results[mid] = _record(
             db_factory, mid, _Fetched("partial", error="index budget exceeded"), utcnow()

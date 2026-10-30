@@ -168,3 +168,32 @@ def test_change_home_server_holds_scan_lock(authed, monkeypatch):
     r = authed.put("/api/v1/servers/home", json={"machine_id": "id-friend"})
     assert r.status_code == 200 and seen == [True]
     wait_idle(app)
+
+
+def _home_row(c):
+    return next(s for s in c.get("/api/v1/servers").json() if s["machine_id"] == "id-home")
+
+
+def test_scan_reports_home_reachability(authed):
+    app = authed.app
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    assert authed.put("/api/v1/servers/home", json={"machine_id": "id-home"}).status_code == 200
+    wait_idle(app)
+    assert authed.post("/api/v1/scan").status_code in (200, 202)
+    wait_idle(app)
+    home = _home_row(authed)
+    assert home["status"] == "online"
+    assert home["last_indexed_at"] is None
+
+
+def test_home_status_ignores_disabled_override(authed):
+    _connect(authed)
+    authed.post("/api/v1/servers/refresh")
+    assert authed.put("/api/v1/servers/home", json={"machine_id": "id-home"}).status_code == 200
+    wait_idle(authed.app)
+    assert authed.patch("/api/v1/servers/id-home", json={"enabled": False}).status_code == 200
+    home = _home_row(authed)
+    assert home["enabled"] is False
+    assert home["status"] == home["reachability"]
+    assert home["status"] != "disabled"

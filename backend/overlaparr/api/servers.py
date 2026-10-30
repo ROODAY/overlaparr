@@ -33,14 +33,16 @@ class ServerPatch(BaseModel):
 def _row(s: Server, cfg: AppConfig) -> dict:
     override = next((o for o in cfg.servers if o.id == s.machine_id), None)
     enabled = override.enabled if override else True
+    is_home = s.machine_id == cfg.plex.home_server
     return {
         "machine_id": s.machine_id,
         "name": s.name,
         "label": (override.label if override and override.label else s.name),
         "enabled": enabled,
-        "is_home": s.machine_id == cfg.plex.home_server,
+        "is_home": is_home,
         "is_new": s.is_new,
-        "status": s.reachability if enabled else "disabled",
+        # The home is checked every scan regardless of its override.
+        "status": s.reachability if enabled or is_home else "disabled",
         "reachability": s.reachability,
         "last_indexed_at": s.last_indexed_at,
         "last_attempt_at": s.last_attempt_at,

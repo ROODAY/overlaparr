@@ -71,10 +71,10 @@ def seed_item(factory, server_id, rk="old", tmdb=999):
         db.commit()
 
 
-def run(factory, gw, servers, budget=5.0, page_size=2, progress=None):
+def run(factory, gw, servers, budget=5.0, page_size=2, progress=None, home_id=None):
     return index_servers(
         factory, gw, servers, timeout=1, budget_s=budget, page_size=page_size,
-        progress=progress or (lambda label, n: None),
+        progress=progress or (lambda label, n: None), home_id=home_id,
     )
 
 
@@ -176,13 +176,99 @@ def test_relay_marks_degraded(factory):
         assert db.get(Server, "id-a").reachability == "degraded"
 
 
+def home_row(factory):
+    with factory() as db:
+        return db.get(Server, "id-home")
+
+
 def test_home_server_never_indexed(factory):
     servers = add_servers(factory, "home", "a", home="home")
     gw = FakePlexGateway({"home": {"items": [movie(1, 1)]}, "a": {"items": [movie(2, 2)]}})
-    res = run(factory, gw, servers)
+    res = run(factory, gw, servers, home_id="id-home")
     assert "id-home" not in res
-    assert gw.connect_calls == ["a"]
+    assert sorted(gw.connect_calls) == ["a", "home"]
     assert items_of(factory, "id-home") == []
+    srv = home_row(factory)
+    assert srv.reachability == "online" and srv.last_attempt_at is not None
+    assert srv.last_indexed_at is None and srv.movie_count == 0
+
+
+def test_home_not_contacted_without_home_id(factory):
+    servers = add_servers(factory, "home", "a", home="home")
+    gw = FakePlexGateway({"home": {}, "a": {"items": [movie(2, 2)]}})
+    run(factory, gw, servers)
+    assert gw.connect_calls == ["a"]
+    assert home_row(factory).last_attempt_at is None
+
+
+def test_home_check_relay_is_degraded(factory):
+    servers = add_servers(factory, "home", "a", home="home")
+    gw = FakePlexGateway({"home": {"relay": True}, "a": {}})
+    run(factory, gw, servers, home_id="id-home")
+    assert home_row(factory).reachability == "degraded"
+
+
+def _set_home_online(factory):
+    with factory() as db:
+        db.get(Server, "id-home").reachability = "online"
+        db.commit()
+
+
+def test_home_check_unreachable_is_offline(factory):
+    servers = add_servers(factory, "home", "a", home="home")
+    _set_home_online(factory)
+    gw = FakePlexGateway({"home": {"unreachable": True}, "a": {}})
+    run(factory, gw, servers, home_id="id-home")
+    srv = home_row(factory)
+    assert srv.reachability == "offline" and srv.last_attempt_at is not None
+
+
+def test_home_missing_from_discovery_is_offline(factory):
+    servers = add_servers(factory, "home", "a", home="home")
+    _set_home_online(factory)
+    run(factory, FakePlexGateway({"a": {}}), servers, home_id="id-home")
+    assert home_row(factory).reachability == "offline"
+
+
+def test_home_check_keeps_index_data(factory):
+    servers = add_servers(factory, "home", "a", home="home")
+    seed_item(factory, "id-home")
+    indexed = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    with factory() as db:
+        srv = db.get(Server, "id-home")
+        srv.movie_count, srv.last_indexed_at = 7, indexed
+        db.commit()
+    gw = FakePlexGateway({"home": {"items": [movie(1, 1)]}, "a": {}})
+    run(factory, gw, servers, home_id="id-home")
+    assert [i.rating_key for i in items_of(factory, "id-home")] == ["old"]
+    srv = home_row(factory)
+    assert srv.movie_count == 7 and srv.last_indexed_at == indexed
+    with factory() as db:
+        eps = db.scalars(select(IndexEpisode).where(IndexEpisode.server_id == "id-home")).all()
+        assert len(eps) == 1
+
+
+def test_home_pending_at_deadline_is_offline(factory):
+    servers = add_servers(factory, "home", home="home")
+    _set_home_online(factory)
+    gw = FakePlexGateway({"home": {}})
+    real_connect = gw.connect
+
+    def connect(info, timeout):
+        time.sleep(0.5)
+        return real_connect(info, timeout)
+
+    gw.connect = connect
+    assert run(factory, gw, servers, budget=0.1, home_id="id-home") == {}
+    assert home_row(factory).reachability == "offline"
+
+
+def test_home_checked_with_no_targets(factory):
+    servers = add_servers(factory, "home", home="home")
+    gw = FakePlexGateway({"home": {}})
+    assert run(factory, gw, servers, home_id="id-home") == {}
+    assert gw.connect_calls == ["home"]
+    assert home_row(factory).reachability == "online"
 
 
 def test_duplicate_across_libraries_keeps_best(factory):
