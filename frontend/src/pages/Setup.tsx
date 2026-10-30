@@ -29,7 +29,7 @@ const STEPS = [
   { id: "user", label: "Account" },
   { id: "plex", label: "Plex" },
   { id: "home", label: "Home server" },
-  { id: "instance", label: "Instance" },
+  { id: "instance", label: "Instances" },
   { id: "finish", label: "Finish" },
 ] as const;
 type Step = (typeof STEPS)[number]["id"];
@@ -512,6 +512,15 @@ function InstanceStep({ onDone }: { onDone: (added: boolean) => void }) {
         Overlaparr compares their libraries with the other Plex servers. You can add more later on
         the Instances page.
       </p>
+      {instances.isPending && <p className="text-sm text-slate-400">Loading your instances…</p>}
+      {instances.isError && (
+        <>
+          <Alert>{message(instances.error)}</Alert>
+          <button type="button" onClick={() => void instances.refetch()} className={`mt-3 ${SECONDARY}`}>
+            Retry
+          </button>
+        </>
+      )}
       {added.length > 0 && (
         <ul aria-label="Added instances" className="mb-4 space-y-2">
           {added.map((i) => (
@@ -525,7 +534,8 @@ function InstanceStep({ onDone }: { onDone: (added: boolean) => void }) {
           ))}
         </ul>
       )}
-      {added.length === 0 || adding ? (
+      {/* Wait for the list, so existing instances aren't hidden behind an empty form and Skip. */}
+      {!instances.isSuccess ? null : added.length === 0 || adding ? (
         <InstanceForm
           key={formKey}
           onSaved={saved}

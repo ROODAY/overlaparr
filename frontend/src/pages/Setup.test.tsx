@@ -74,7 +74,7 @@ const saveInstance = http.post("*/api/v1/instances", async ({ request }) => {
 
 async function fillInstance(user: ReturnType<typeof userEvent.setup>, name = "Sonarr") {
   await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
-  await user.type(screen.getByLabelText("Name"), name);
+  await user.type(await screen.findByLabelText("Name"), name);
   await user.type(screen.getByLabelText("URL"), "http://sonarr:8989");
   await user.type(screen.getByLabelText("API key"), "key");
 }
@@ -255,7 +255,7 @@ describe("Setup wizard", () => {
     renderSetup();
 
     await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
-    await user.type(screen.getByLabelText("Name"), "Sonarr");
+    await user.type(await screen.findByLabelText("Name"), "Sonarr");
     await user.type(screen.getByLabelText("URL"), "http://sonarr:8989");
     await user.type(screen.getByLabelText("API key"), "bad-key");
     await user.click(screen.getByRole("button", { name: "Test" }));
@@ -288,7 +288,7 @@ describe("Setup wizard", () => {
     renderSetup();
 
     await screen.findByRole("heading", { name: "Add your Sonarr and Radarr instances" });
-    await user.type(screen.getByLabelText("Name"), "Radarr");
+    await user.type(await screen.findByLabelText("Name"), "Radarr");
     await user.selectOptions(screen.getByLabelText("Type"), "radarr");
     await user.type(screen.getByLabelText("URL"), "http://radarr:7878");
     await user.type(screen.getByLabelText("API key"), "good-key");
@@ -429,6 +429,69 @@ describe("Setup wizard", () => {
     expect(
       await screen.findByRole("button", { name: "Finish and run first scan" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows a loading line, not the form or Skip, while the instance list loads", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    server.use(
+      statusHandler(),
+      loggedIn,
+      http.get("*/api/v1/instances", async () => {
+        await gate;
+        return HttpResponse.json(instances);
+      }),
+    );
+    renderSetup();
+
+    expect(await screen.findByText("Loading your instances…")).toBeInTheDocument();
+    expect(screen.getByText("4. Instances")).toHaveAttribute("aria-current", "step");
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    release();
+    expect(await screen.findByLabelText("Name")).toBeInTheDocument();
+    expect(screen.queryByText("Loading your instances…")).not.toBeInTheDocument();
+  });
+
+  it("lists instances that already exist and offers Continue on load", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    instances = [instanceFixture({ id: "i1", name: "TV", type: "sonarr" })];
+    server.use(statusHandler(), loggedIn, listInstances);
+    renderSetup();
+
+    const list = await screen.findByRole("list", { name: "Added instances" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "TVSonarr",
+    ]);
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add another" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+  });
+
+  it("shows the error and retries when the instance list fails to load", async () => {
+    status = { ...FRESH, needs_user: false, plex_connected: true, home_server_set: true };
+    let fail = true;
+    server.use(
+      statusHandler(),
+      loggedIn,
+      http.get("*/api/v1/instances", () =>
+        fail
+          ? HttpResponse.json({ detail: "Not allowed" }, { status: 403 })
+          : HttpResponse.json(instances),
+      ),
+    );
+    const user = userEvent.setup();
+    renderSetup();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not allowed");
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skip for now" })).not.toBeInTheDocument();
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByLabelText("Name")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("lets the instance step be skipped and treats an already running scan as fine", async () => {
