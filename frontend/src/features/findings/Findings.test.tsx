@@ -100,12 +100,17 @@ describe("Findings", () => {
       "/findings/1",
     );
     expect(screen.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
-    // Diff badges: coverage, quality, edition, match method.
+    // Diff badges: coverage, quality, edition, match method, each saying what it measures.
+    const heat = within(table).getByRole("link", { name: /Heat/ }).closest("tr")!;
+    expect(heat).toHaveTextContent("Full coverage");
+    expect(heat).toHaveTextContent("Better elsewhere");
+    expect(heat).toHaveTextContent("Same edition");
     const wire = within(table).getByRole("link", { name: /The Wire/ }).closest("tr")!;
     expect(wire).toHaveTextContent("Partial 3/10");
-    expect(wire).toHaveTextContent("Worse");
+    expect(wire).toHaveTextContent("Worse elsewhere");
     expect(wire).toHaveTextContent("Matched by number");
     expect(wire).not.toHaveTextContent("Different");
+    expect(wire).not.toHaveTextContent("Edition unknown");
   });
 
   it("falls back to table when localStorage throws", async () => {

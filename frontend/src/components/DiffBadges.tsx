@@ -1,40 +1,44 @@
 import type { EditionCmp, FindingBadges, FindingKind, Quality } from "../api/types";
 import { Badge, type BadgeVariant } from "./Badge";
 
-const QUALITY: Record<Quality, [string, BadgeVariant]> = {
-  better: ["Better", "good"],
-  same: ["Same", "good"],
-  worse: ["Worse", "bad"],
-  unknown: ["Unknown", "neutral"],
+/** [chip text, variant, tooltip]: the text names the dimension so it reads on its own. */
+const QUALITY: Record<Quality, [string, BadgeVariant, string]> = {
+  better: ["Better elsewhere", "good", "Best quality on other servers is better than yours"],
+  same: ["Same quality", "good", "Best quality on other servers matches yours"],
+  worse: ["Worse elsewhere", "bad", "Best quality on other servers is worse than yours"],
+  unknown: ["Quality unknown", "neutral", "Quality couldn't be compared"],
 };
 
-const EDITION: Record<EditionCmp, [string, BadgeVariant]> = {
-  same: ["Same", "good"],
-  different: ["Different", "bad"],
-  unknown: ["Unknown", "neutral"],
+const EDITION: Record<EditionCmp, [string, BadgeVariant, string]> = {
+  same: ["Same edition", "good", "Other servers have the same edition as yours"],
+  different: ["Different edition", "bad", "Other servers have a different edition from yours"],
+  unknown: ["Edition unknown", "neutral", "Edition couldn't be compared"],
 };
 
 /** Difference badges: coverage, quality, edition and match method. */
 export function DiffBadges({ badges, kind }: { badges: FindingBadges; kind?: FindingKind }) {
-  const [qualityText, qualityVariant] = QUALITY[badges.best_quality];
-  const [editionText, editionVariant] = EDITION[badges.edition];
+  const [qualityText, qualityVariant, qualityTitle] = QUALITY[badges.best_quality];
+  const [editionText, editionVariant, editionTitle] = EDITION[badges.edition];
   const showEdition = !(badges.edition === "unknown" && kind === "series");
   return (
     <span className="inline-flex flex-wrap gap-1">
       {badges.coverage === "full" ? (
-        <Badge variant="good" title="Coverage">
-          Full
+        <Badge variant="good" title="Other servers have everything you have">
+          Full coverage
         </Badge>
       ) : (
-        <Badge variant="caution" title="Coverage">
+        <Badge
+          variant="caution"
+          title={`Other servers have ${badges.covered_count} of your ${badges.relevant_count}`}
+        >
           Partial {badges.covered_count}/{badges.relevant_count}
         </Badge>
       )}
-      <Badge variant={qualityVariant} title={`Quality elsewhere vs yours: ${qualityText}`}>
+      <Badge variant={qualityVariant} title={qualityTitle}>
         {qualityText}
       </Badge>
       {showEdition && (
-        <Badge variant={editionVariant} title={`Edition: ${editionText}`}>
+        <Badge variant={editionVariant} title={editionTitle}>
           {editionText}
         </Badge>
       )}
