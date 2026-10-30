@@ -1,6 +1,6 @@
 [project]
 name = "overlaparr"
-version = "0.1.0"
+version = "0.1.1"
 description = "Find Sonarr/Radarr media already available on other Plex servers"
 readme = "README.md"
 authors = [
